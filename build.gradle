@@ -24,11 +24,16 @@ dependencies {
     implementation 'org.bouncycastle:bcpkix-jdk18on:1.79'
     implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'
 
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.3'
+
+
     // 4. 로깅 실제 엔진 (런타임 주입)
     runtimeOnly 'org.apache.logging.log4j:log4j-core'
 
     // 5. 비동기 큐 자료구조 (런타임 주입)
     runtimeOnly 'com.lmax:disruptor:4.0.0'
+
+
 }
 
 test {

@@ -6,23 +6,30 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.ssl.SslContext;
+import org.example.netty_basecamp.netty.rest.HttpRoutingHandler;
+import org.example.netty_basecamp.netty.rest.RouteRegistry;
 
 public class CustomChannelInitializer extends ChannelInitializer<Channel>{
 
     private final SslContext sslCtx;
+    private final RouteRegistry routeRegistry;
 
-    public CustomChannelInitializer(SslContext sslCtx) {
+    public CustomChannelInitializer(SslContext sslCtx, RouteRegistry routeRegistry) {
         this.sslCtx = sslCtx;
+        this.routeRegistry = routeRegistry;
     }
+
 
     @Override
     protected void initChannel(Channel ch) throws Exception {
         ChannelPipeline p = ch.pipeline();
 
-        // HTTP 요청/응답 인코딩·디코딩
+        // 1. HTTP 요청/응답 인코딩·디코딩
         p.addLast(new HttpServerCodec());
-        // HTTP 메시지 조각을 하나로 합침
+        // 2. HTTP 메시지 조각을 하나로 합침
         p.addLast(new HttpObjectAggregator(65536));
-        // 우리가 만들 라우팅 핸들러
+        // 3. 우리가 만들 라우팅 핸들러
+        p.addLast(new HttpRoutingHandler(routeRegistry));
+        // 4. ???
     }
 }
