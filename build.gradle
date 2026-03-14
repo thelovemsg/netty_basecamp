@@ -10,9 +10,25 @@ repositories {
 }
 
 dependencies {
-    // Source: https://mvnrepository.com/artifact/io.netty/netty-all
+  // 1. 순수 Netty 프레임워크
     implementation 'io.netty:netty-all:4.2.8.Final'
-    implementation 'org.springframework:spring-context:6.1.4'
+
+    // 2. Log4j2 버전 통제소 (BOM)
+    implementation platform('org.apache.logging.log4j:log4j-bom:2.25.3')
+
+    // 3. 로깅 인터페이스 (컴파일 타임 연결)
+    implementation 'org.apache.logging.log4j:log4j-api'
+
+    // 6. Netty 인증서 빌더를 위한 Bouncy Castle (추가)
+    // 최신 JDK 18 이상(JDK 21 포함)을 지원하는 jdk18on 아티팩트 사용
+    implementation 'org.bouncycastle:bcpkix-jdk18on:1.79'
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'
+
+    // 4. 로깅 실제 엔진 (런타임 주입)
+    runtimeOnly 'org.apache.logging.log4j:log4j-core'
+
+    // 5. 비동기 큐 자료구조 (런타임 주입)
+    runtimeOnly 'com.lmax:disruptor:4.0.0'
 }
 
 test {
