@@ -15,6 +15,7 @@
 5. [ADR-005: Controller 레이어 분리 — Inbound Adapter 도입](#adr-005)
 6. [ADR-006: Repository 인터페이스를 domain 패키지로 이동 — 의존성 역전 적용](#adr-006)
 7. [ADR-007: 리플렉션 없이 명시적 타입 변환 유지](#adr-007)
+8. [ADR-008: 인증은 파이프라인 ChannelHandler, 인가는 Controller — AUTH_KEY 단일 전달](#adr-008)
 
 ---
 
@@ -77,22 +78,31 @@ RouteMatch match = registry.find(method, path);
 
 ---
 
-## ADR-003: AuthFilter 최소 구조 도입 {#adr-003}
+## ADR-003: 자체 필터 체인 제거 — Netty 파이프라인으로 통일 {#adr-003}
 **날짜**: 2026-03-15
+**수정**: 2026-03-15
 
-### 문제
-- 나중에 Authorization header 검증 같은 보안 처리가 필요해질 것
-- 하지만 학습 프로젝트이므로 Spring Security 같은 거창한 구조는 과하다
+### 초기 결정
+- `RouteFilter` 인터페이스 + `AuthFilter` 구현체로 자체 필터 체인을 만들었음
 
-### 결정
-- `RouteFilter` 인터페이스 (FunctionalInterface) + `AuthFilter` 구현체 + `UnauthorizedException`
-- `HttpRoutingHandler`에서 `List<RouteFilter>`를 for문으로 순회 (3줄)
-- 현재는 필터 없이(`List.of()`) 동작 → 기존 동작에 영향 없음
-- Spring Security의 FilterChain, SecurityContext, FilterOrder 같은 구조는 **의도적으로 배제**
+### 재검토
+- Netty 파이프라인 자체가 필터 체인 역할을 함 (`ChannelHandler` 추가/제거)
+- Netty를 배우는 프로젝트에서 Netty 파이프라인을 안 쓰고 자체 필터 체인을 만드는 건 방향이 맞지 않음
+
+### 변경된 결정
+- `RouteFilter`, `AuthFilter`, `UnauthorizedException` 제거
+- 인증 같은 cross-cutting concern이 필요하면 **ChannelHandler를 파이프라인에 추가**하는 방식으로 처리
+- `HttpRoutingHandler`는 라우팅과 핸들러 실행에만 집중
+
+### Netty 파이프라인 방식 예시
+```
+HttpServerCodec → Aggregator → [AuthHandler] → HttpRoutingHandler
+                                    ↑ ChannelHandler를 넣고 빼기만 하면 됨
+```
 
 ### 판단 근거
-- 학습 프로젝트에서 중요한 건 "이런 구조가 가능하구나"를 확인하는 것
-- 확장 가능성만 열어두되, 실제로 필터를 여러 개 쌓을 일이 오면 그때 고민해도 늦지 않음
+- Netty의 파이프라인이 곧 필터 체인 — 같은 기능을 이중으로 만들 필요 없음
+- 파이프라인 핸들러는 넣고 빼기가 자유롭고, Netty가 스레드 안전성을 보장함
 
 ---
 
@@ -295,3 +305,56 @@ domains/member/
 - 프로젝트 목적이 "Spring 없이 순수 Netty + DDD" 검증
 - 리플렉션 도입 시 어노테이션 → 스캐너 → 파라미터 리졸버 → 타입 변환기로 이어져 Spring MVC를 재발명하게 됨
 - 학습 프로젝트에서 중요한 건 구조의 본질을 이해하는 것이지, 편의 기능을 만드는 것이 아님
+
+---
+
+## ADR-008: 인증은 파이프라인 ChannelHandler, 인가는 Controller — AUTH_KEY 단일 전달 {#adr-008}
+**날짜**: 2026-03-15
+
+### 문제
+- 인증(Authentication)과 인가(Authorization)의 책임이 분리되어 있지 않았음
+- ADR-003에서 자체 필터 체인을 제거하고 Netty 파이프라인을 쓰기로 했으므로, 인증도 ChannelHandler로 처리해야 함
+- 초기 구현에서 `userId`, `role`을 각각 별도 `AttributeKey`로 전달 → 실제 토큰 기반 인증과 거리가 멀고, 필드가 늘어날 때마다 attr이 증가하는 구조
+
+### 결정
+- **인증**: `AuthChannelInboundHandler`에서 처리 — Authorization 헤더의 토큰을 디코딩하여 `AuthInfo` VO를 생성, `Channel.attr(AUTH_KEY)` **단일 키**로 전달
+- **인가**: `Controller`에서 처리 — `ctx.getAuthInfo().getRole()` 등으로 접근 제어
+- **ApplicationService**: 인증/인가와 무관하게 순수 비즈니스 로직만 담당
+
+### 핵심: AUTH_KEY 단일 전달
+```java
+// AuthChannelInboundHandler
+public static final AttributeKey<AuthInfo> AUTH_KEY = AttributeKey.valueOf("AUTH_KEY");
+
+AuthInfo authInfo = decodeToken(token);  // 토큰 디코딩 → AuthInfo VO
+ctx.channel().attr(AUTH_KEY).set(authInfo);
+ctx.fireChannelRead(request.retain());
+
+// HttpRoutingHandler — 꺼내서 RequestContext에 세팅만
+.authInfo(ctx.channel().attr(AuthChannelInboundHandler.AUTH_KEY).get())
+
+// MemberController — 인가 체크
+if (!"ADMIN".equals(ctx.getAuthInfo().getRole())) { ... }
+```
+
+### 파이프라인 흐름
+```
+HttpServerCodec → Aggregator → AuthChannelInboundHandler → HttpRoutingHandler → Controller
+                                      │                          │                  │
+                                  토큰 디코딩              AUTH_KEY에서           인가 체크
+                                  AuthInfo 생성            AuthInfo 꺼내서        (role 기반)
+                                  AUTH_KEY에 저장          RequestContext에 세팅
+```
+
+### 판단 근거
+- **단일 책임**: AuthHandler는 인증만, Controller는 인가만, ApplicationService는 비즈니스만
+- **AUTH_KEY 단일 전달**: 인증 결과가 아무리 복잡해져도(claims, permissions 등) AuthInfo VO만 확장하면 됨, attr 키는 하나
+- **Netty 파이프라인 활용**: ADR-003의 결정과 일관 — cross-cutting concern은 ChannelHandler로 처리
+- **HttpRoutingHandler는 전달만**: 인증 로직을 모름, attr에서 꺼내서 RequestContext에 넣을 뿐
+
+### 관련 파일
+- `netty/channel/AuthInfo.java` — 인증 결과 VO (신규)
+- `netty/channel/AuthChannelInboundHandler.java` — 인증 ChannelHandler (신규)
+- `netty/rest/route/RequestContext.java` — `authInfo` 필드 추가
+- `netty/rest/route/HttpRoutingHandler.java` — AUTH_KEY에서 꺼내 RequestContext에 세팅
+- `netty/rest/controller/MemberController.java` — 인가 체크 TODO 예시

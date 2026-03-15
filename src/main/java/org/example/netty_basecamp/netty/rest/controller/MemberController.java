@@ -34,6 +34,9 @@ public class MemberController {
     }
 
     public Object delete(RequestContext ctx) {
+        // TODO: 인가(Authorization) 체크 — 예시:
+        //   if (!ctx.isAuthenticated()) throw new IllegalStateException("Unauthorized");
+        //   if (!"ADMIN".equals(ctx.getAuthInfo().getRole())) throw new IllegalStateException("Forbidden");
         Long id = ctx.pathVariableAsLong("id");
         memberService.delete(id);
         return Map.of("message", "Deleted member: " + id);

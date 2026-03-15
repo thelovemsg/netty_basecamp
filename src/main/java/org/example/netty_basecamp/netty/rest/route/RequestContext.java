@@ -1,6 +1,7 @@
 package org.example.netty_basecamp.netty.rest.route;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.example.netty_basecamp.netty.auth.AuthInfo;
 
 import java.util.Collections;
 import java.util.Map;
@@ -15,6 +16,7 @@ public class RequestContext {
     private final Map<String, String> queryParams;
     private final Map<String, String> headers;
     private final String body;
+    private final AuthInfo authInfo;
 
     private RequestContext(Builder builder) {
         this.method = builder.method;
@@ -23,6 +25,7 @@ public class RequestContext {
         this.queryParams = Collections.unmodifiableMap(builder.queryParams);
         this.headers = Collections.unmodifiableMap(builder.headers);
         this.body = builder.body;
+        this.authInfo = builder.authInfo;
     }
 
     public String getMethod() {
@@ -65,6 +68,14 @@ public class RequestContext {
         return body;
     }
 
+    public AuthInfo getAuthInfo() {
+        return authInfo;
+    }
+
+    public boolean isAuthenticated() {
+        return authInfo != null;
+    }
+
     public <T> T readBody(Class<T> clazz) {
         try {
             return objectMapper.readValue(body, clazz);
@@ -84,6 +95,7 @@ public class RequestContext {
         private Map<String, String> queryParams = Map.of();
         private Map<String, String> headers = Map.of();
         private String body = "";
+        private AuthInfo authInfo;
 
         public Builder method(String method) {
             this.method = method;
@@ -112,6 +124,11 @@ public class RequestContext {
 
         public Builder body(String body) {
             this.body = body;
+            return this;
+        }
+
+        public Builder authInfo(AuthInfo authInfo) {
+            this.authInfo = authInfo;
             return this;
         }
 

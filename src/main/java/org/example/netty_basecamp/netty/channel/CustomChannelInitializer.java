@@ -28,6 +28,8 @@ public class CustomChannelInitializer extends ChannelInitializer<Channel>{
         p.addLast(new HttpServerCodec());
         // 2. HTTP 메시지 조각을 하나로 합침
         p.addLast(new HttpObjectAggregator(65536));
+
+//        p.addLast(new AuthChannelInboundHandler());
         // 3. 우리가 만들 라우팅 핸들러
         p.addLast(new HttpRoutingHandler(routeRegistry));
         // 4. ???

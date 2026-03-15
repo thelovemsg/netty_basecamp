@@ -8,13 +8,9 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.*;
 import io.netty.util.CharsetUtil;
+import org.example.netty_basecamp.netty.channel.AuthChannelInboundHandler;
 
-import org.example.netty_basecamp.netty.rest.filter.RouteFilter;
-import org.example.netty_basecamp.netty.rest.filter.UnauthorizedException;
-
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
@@ -24,16 +20,10 @@ import static io.netty.handler.codec.http.HttpResponseStatus.*;
 public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private final RouteRegistry registry;
-    private final List<RouteFilter> filters;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public HttpRoutingHandler(RouteRegistry registry) {
-        this(registry, List.of());
-    }
-
-    public HttpRoutingHandler(RouteRegistry registry, List<RouteFilter> filters) {
         this.registry = registry;
-        this.filters = new ArrayList<>(filters);
     }
 
     @Override
@@ -55,16 +45,11 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
                     .queryParams(extractQueryParams(request.uri()))
                     .headers(extractHeaders(request.headers()))
                     .body(request.content().toString(CharsetUtil.UTF_8))
+                    .authInfo(ctx.channel().attr(AuthChannelInboundHandler.AUTH_KEY).get())
                     .build();
-
-            for (RouteFilter filter : filters) {
-                requestContext = filter.filter(requestContext);
-            }
 
             Object result = match.getEntry().handle(requestContext);
             sendJson(ctx, OK, result);
-        } catch (UnauthorizedException e) {
-            sendJson(ctx, UNAUTHORIZED, Map.of("error", e.getMessage()));
         } catch (IllegalArgumentException e) {
             sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()));
         } catch (Exception e) {
