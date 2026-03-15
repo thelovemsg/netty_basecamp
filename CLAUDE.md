@@ -42,18 +42,24 @@ src/main/java/org/example/netty_basecamp/
 │   │   │   └── service/     # FareCalculationDomainService
 │   │   └── infrastructure/  # FareRepository, FarePolicyRepository (interface)
 │   └── member/
-│       └── domain/          # Members (AR), MembersCreate/Update
+│       ├── application/     # MemberApplicationService
+│       ├── domain/          # Members (AR), MembersCreate/Update
+│       └── infrastructure/  # MemberRepository (interface)
 └── netty/                   # Netty 인프라 레이어
     ├── NettyBootcampServer.java   # Boss(1) + Worker(4) NIO EventLoopGroup
     ├── channel/
     │   ├── CustomChannelInitializer.java   # HttpServerCodec → Aggregator → RoutingHandler
     │   ├── CustomChannelInboundHandler.java
     │   └── CustomChannelOutboundHandler.java
+    ├── repository/
+    │   └── InMemoryMemberRepository.java   # ConcurrentHashMap 기반 구현체
     ├── rest/
     │   ├── HttpRoutingHandler.java   # SimpleChannelInboundHandler<FullHttpRequest>
-    │   ├── RouteRegistry.java        # HashMap<String, RouteEntry>
-    │   ├── RouteEntry.java           # HttpMethod + path + BiFunction<params, body, Object>
-    │   └── AppConfig.java            # 라우트 등록 (ApplicationService 람다로 주입)
+    │   ├── RouteRegistry.java        # 정확 매칭 + path variable 패턴 매칭
+    │   ├── RouteEntry.java           # HttpMethod + path + BiFunction + path variable 추출
+    │   ├── AppConfig.java            # 도메인별 RouteConfig 조립 진입점
+    │   └── config/
+    │       └── MemberRouteConfig.java  # Member DI 조립 + 라우트 정의
     └── util/
         └── ServerUtil.java           # Zero Trust TLS, Bouncy Castle 자체 서명 인증서
 ```
@@ -66,8 +72,8 @@ src/main/java/org/example/netty_basecamp/
 - **Aggregate Root**: `Coupon`, `Fare`, `Members` — 내부 불변식(invariant)을 스스로 보호
 - **Value Object**: `Money`, `Inventory` — 불변(immutable), 동등성은 값으로 비교
 - **Domain Service**: 단일 Aggregate를 넘는 도메인 로직 (`CouponIssueDomainService`, `FareCalculationDomainService`)
-- **Application Service**: 도메인 객체 오케스트레이션 + 트랜잭션 경계 (`CouponIssueApplicationService`)
-- **Repository**: 인터페이스만 domain 레이어에 존재, 구현은 infrastructure
+- **Application Service**: 도메인 객체 오케스트레이션 + 트랜잭션 경계 (`CouponIssueApplicationService`, `MemberApplicationService`)
+- **Repository**: 인터페이스만 domain 레이어에 존재, 구현은 `netty/repository/`에 배치
 
 ### Strategy Pattern (Fare Calculation)
 ```
@@ -82,11 +88,14 @@ FarePolicyStrategy (interface)
 ### Netty HTTP 라우팅
 ```
 Request → HttpServerCodec → HttpObjectAggregator → HttpRoutingHandler
-                                                         └── RouteRegistry.lookup(method + path)
-                                                               └── RouteEntry.handler.apply(params, body)
-                                                                     └── ApplicationService 호출
+                                                         └── RouteRegistry.find(method, path, pathParams)
+                                                               ├── 1순위: 정확 매칭 (exactRoutes)
+                                                               └── 2순위: path variable 패턴 매칭 (/api/members/{id})
+                                                                     └── RouteEntry.handle(params, body)
+                                                                           └── ApplicationService 호출
 ```
-Spring 없이 `BiFunction<Map<String, String>, String, Object>` 람다로 라우트 핸들러를 등록한다.
+- 도메인별 `XxxRouteConfig.routes()` → `AppConfig`에서 `RouteRegistry`에 일괄 등록
+- Spring 없이 `BiFunction<Map<String, String>, String, Object>` 람다로 라우트 핸들러를 등록한다.
 
 ---
 
@@ -107,8 +116,10 @@ Spring 없이 `BiFunction<Map<String, String>, String, Object>` 람다로 라우
 
 | 파일 | 역할 |
 |------|------|
-| `netty/rest/AppConfig.java` | 라우트 등록 진입점 |
+| `netty/rest/AppConfig.java` | 도메인별 RouteConfig 조립 진입점 |
+| `netty/rest/config/MemberRouteConfig.java` | Member DI 조립 + CRUD 라우트 정의 |
 | `netty/rest/HttpRoutingHandler.java` | HTTP 요청 처리 핵심 |
+| `domain/member/application/MemberApplicationService.java` | 회원 CRUD 유스케이스 |
 | `domain/coupon/application/CouponIssueApplicationService.java` | 쿠폰 발급 유스케이스 |
 | `domain/fare/domain/calculation/FareCalculationPipeline.java` | 요금 계산 파이프라인 |
 | `NettyBaseCampApplication.java` | 애플리케이션 진입점 (port 8080) |
