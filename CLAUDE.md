@@ -54,12 +54,17 @@ src/main/java/org/example/netty_basecamp/
     ├── repository/
     │   └── InMemoryMemberRepository.java   # ConcurrentHashMap 기반 구현체
     ├── rest/
-    │   ├── HttpRoutingHandler.java   # SimpleChannelInboundHandler<FullHttpRequest>
-    │   ├── RouteRegistry.java        # 정확 매칭 + path variable 패턴 매칭
-    │   ├── RouteEntry.java           # HttpMethod + path + BiFunction + path variable 추출
     │   ├── AppConfig.java            # 도메인별 RouteConfig 조립 진입점
-    │   └── config/
-    │       └── MemberRouteConfig.java  # Member DI 조립 + 라우트 정의
+    │   ├── controller/
+    │   │   └── MemberController.java   # Member Inbound Adapter (HTTP ↔ ApplicationService 변환)
+    │   ├── config/
+    │   │   └── MemberRouteConfig.java  # Member DI 조립 + 라우트 등록
+    │   ├── route/
+    │   │   ├── HttpRoutingHandler.java   # SimpleChannelInboundHandler<FullHttpRequest>
+    │   │   ├── RouteRegistry.java        # 정확 매칭 + path variable 패턴 매칭
+    │   │   ├── RouteEntry.java           # HttpMethod + path + Function<RequestContext, Object>
+    │   │   ├── RouteMatch.java           # 매칭 결과 (RouteEntry + pathVariables)
+    │   │   └── RequestContext.java       # 불변 요청 컨텍스트 (Builder 패턴)
     └── util/
         └── ServerUtil.java           # Zero Trust TLS, Bouncy Castle 자체 서명 인증서
 ```

@@ -12,6 +12,9 @@
 2. [ADR-002: RouteMatch 도입 — RouteRegistry 매칭 결과 정리](#adr-002)
 3. [ADR-003: AuthFilter 최소 구조 도입](#adr-003)
 4. [ADR-004: EventLoop 블로킹 이슈 — Phase 2 진입 시 해결 필요](#adr-004)
+5. [ADR-005: Controller 레이어 분리 — Inbound Adapter 도입](#adr-005)
+6. [ADR-006: Repository 인터페이스를 domain 패키지로 이동 — 의존성 역전 적용](#adr-006)
+7. [ADR-007: 리플렉션 없이 명시적 타입 변환 유지](#adr-007)
 
 ---
 
@@ -162,3 +165,133 @@ protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) 
 - `netty/rest/route/HttpRoutingHandler.java` — 블로킹 발생 지점
 - `netty/channel/CustomChannelInboundHandler.java` — 빈 껍데기 (미사용)
 - `netty/channel/CustomChannelOutboundHandler.java` — 빈 껍데기 (미사용)
+
+---
+
+## ADR-005: Controller 레이어 분리 — Inbound Adapter 도입 {#adr-005}
+**날짜**: 2026-03-15
+
+### 문제
+- `MemberRouteConfig`에서 DI 조립 + 라우트 등록 + 요청 파싱/변환을 람다 안에서 모두 처리
+- 헥사고날 아키텍처 관점에서 **Inbound Adapter(Controller)** 레이어가 부재
+- 핸들러 로직이 커지면(검증, 응답 변환, 에러 매핑) 람다 안에서 감당 불가
+
+### 결정
+- `controller/` 패키지에 `MemberController` 도입 — **HTTP ↔ ApplicationService 변환** 책임만 담당
+- `MemberRouteConfig`는 **DI 조립 + RouteEntry 등록**만 담당
+- 메서드 레퍼런스(`controller::create`)로 라우트 등록
+
+### Before
+```java
+// MemberRouteConfig — DI + 라우트 + 요청 파싱이 한 곳에
+new RouteEntry(HttpMethod.PUT, "/api/members/{id}",
+    ctx -> memberService.update(
+            ctx.pathVariableAsLong("id"),
+            ctx.readBody(MembersUpdate.class)))
+```
+
+### After
+```java
+// MemberController — Inbound Adapter
+public Object update(RequestContext ctx) {
+    return memberService.update(
+            ctx.pathVariableAsLong("id"),
+            ctx.readBody(MembersUpdate.class));
+}
+
+// MemberRouteConfig — 조립 + 등록만
+new RouteEntry(HttpMethod.PUT, "/api/members/{id}", controller::update)
+```
+
+### 헥사고날 매핑
+```
+[Adapter (In)]        [Port (In)]              [Domain]
+MemberController → MemberApplicationService → Members (AR)
+      ↑                                           ↑
+ RequestContext 변환                        도메인 불변식 보호
+```
+
+### 효과
+- 책임 분리 — Controller(변환), RouteConfig(조립), ApplicationService(유스케이스)
+- Controller 단위 테스트 용이 — RequestContext mock만 넣으면 됨
+- 라우트 등록이 메서드 레퍼런스로 간결해짐
+
+### 관련 파일
+- `netty/rest/controller/MemberController.java` — 신규 (Inbound Adapter)
+- `netty/rest/config/MemberRouteConfig.java` — DI 조립 + 라우트 등록만 남김
+
+---
+
+## ADR-006: Repository 인터페이스를 domain 패키지로 이동 — 의존성 역전 적용 {#adr-006}
+**날짜**: 2026-03-15
+
+### 문제
+- Repository **인터페이스(Port)**가 `infrastructure/` 패키지에 위치
+- 도메인이 인프라 방향을 바라보는 구조 — 헥사고날의 의존성 방향 원칙에 어긋남
+- `InMemoryMemberRepository` 구현체가 `netty/repository/`에 있어서 도메인과 무관한 위치에 산재
+
+### 결정
+- Repository **인터페이스**를 `domain/` 패키지로 이동 — 도메인이 자신이 필요한 계약을 직접 정의
+- Repository **구현체**를 각 도메인의 `infrastructure/` 패키지로 이동
+
+### Before
+```
+domains/member/
+├── domain/              ← AR, VO
+├── application/         ← ApplicationService
+└── infrastructure/
+    └── MemberRepository.java    ← interface가 여기에
+
+netty/repository/
+    └── InMemoryMemberRepository.java   ← 구현체가 엉뚱한 곳에
+```
+
+### After
+```
+domains/member/
+├── domain/
+│   ├── Members.java              ← AR
+│   └── MemberRepository.java    ← interface (Port) — 도메인이 계약 정의
+├── application/
+│   └── MemberApplicationService.java
+└── infrastructure/
+    └── InMemoryMemberRepository.java   ← 구현체 (Adapter) — 인프라가 계약 구현
+```
+
+### 적용 범위
+| 도메인 | 인터페이스 이동 | 구현체 이동 |
+|--------|----------------|------------|
+| member | `infrastructure/` → `domain/` | `netty/repository/` → `infrastructure/` |
+| coupon | `infrastructure/` → `domain/` | (구현체 아직 없음) |
+| fare | `infrastructure/` → `domain/` (FareRepository, FarePolicyRepository) | (구현체 아직 없음) |
+
+### 효과
+- 의존성 방향이 **인프라 → 도메인** 한 방향으로 통일
+- 도메인 패키지만 보면 어떤 계약이 필요한지 한눈에 파악 가능
+- coupon, fare에 구현체 추가 시 각 도메인의 `infrastructure/`에 넣으면 됨
+
+---
+
+## ADR-007: 리플렉션 없이 명시적 타입 변환 유지 {#adr-007}
+**날짜**: 2026-03-15
+
+### 논의 배경
+- Controller에서 `ctx.readBody(MembersCreate.class)` 호출이 반복되고, 반환 타입이 `Object`인 것이 아쉬움
+- Spring처럼 `@RequestBody` 어노테이션으로 자동 변환할 수 있지 않을까?
+
+### 검토한 대안
+| 방법 | 장점 | 단점 |
+|------|------|------|
+| 현재 방식 (`ctx.readBody()`) | 단순, 명시적, 리플렉션 없음 | Controller에서 한 줄 반복 |
+| RouteEntry에 타입 지정 | 파싱 자동화 가능 | 핸들러 시그니처 복잡해짐 |
+| 어노테이션 + 리플렉션 | Spring처럼 깔끔 | Spring 재발명, 프로젝트 목적에 어긋남 |
+
+### 결정
+- **리플렉션 없이 현재 방식 유지**
+- `ctx.readBody(Class)` 한 줄이 리플렉션 없는 최선의 형태
+- 반환 타입 `Object`도 현재 수준에서는 허용
+
+### 판단 근거
+- 프로젝트 목적이 "Spring 없이 순수 Netty + DDD" 검증
+- 리플렉션 도입 시 어노테이션 → 스캐너 → 파라미터 리졸버 → 타입 변환기로 이어져 Spring MVC를 재발명하게 됨
+- 학습 프로젝트에서 중요한 건 구조의 본질을 이해하는 것이지, 편의 기능을 만드는 것이 아님

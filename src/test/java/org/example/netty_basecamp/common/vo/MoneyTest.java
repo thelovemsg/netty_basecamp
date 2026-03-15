@@ -1,6 +1,6 @@
 package org.example.netty_basecamp.common.vo;
 
-import org.example.netty_basecamp.domain.common.vo.Money;
+import org.example.netty_basecamp.domains.common.vo.Money;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

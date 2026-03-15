@@ -1,7 +1,7 @@
 package org.example.netty_basecamp.fake.repository;
 
-import org.example.netty_basecamp.domain.fare.domain.Fare;
-import org.example.netty_basecamp.domain.fare.infrastructure.FareRepository;
+import org.example.netty_basecamp.domains.fare.domain.Fare;
+import org.example.netty_basecamp.domains.fare.domain.FareRepository;
 
 import java.util.HashMap;
 import java.util.Map;

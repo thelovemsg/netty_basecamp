@@ -1,7 +1,7 @@
 package org.example.netty_basecamp.fake.repository;
 
-import org.example.netty_basecamp.domain.fare.domain.policy.FarePolicy;
-import org.example.netty_basecamp.domain.fare.infrastructure.FarePolicyRepository;
+import org.example.netty_basecamp.domains.fare.domain.policy.FarePolicy;
+import org.example.netty_basecamp.domains.fare.domain.FarePolicyRepository;
 
 import java.util.ArrayList;
 import java.util.List;

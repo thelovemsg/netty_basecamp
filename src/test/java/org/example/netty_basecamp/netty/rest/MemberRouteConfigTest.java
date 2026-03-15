@@ -1,6 +1,6 @@
 package org.example.netty_basecamp.netty.rest;
 
-import org.example.netty_basecamp.domain.member.domain.Members;
+import org.example.netty_basecamp.domains.member.domain.Members;
 import org.example.netty_basecamp.netty.rest.config.MemberRouteConfig;
 import org.example.netty_basecamp.netty.rest.route.RequestContext;
 import org.example.netty_basecamp.netty.rest.route.RouteMatch;

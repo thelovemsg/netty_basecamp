@@ -1,7 +1,7 @@
 package org.example.netty_basecamp.fake.repository;
 
-import org.example.netty_basecamp.domain.coupon.domain.Coupon;
-import org.example.netty_basecamp.domain.coupon.infrastructure.CouponRepository;
+import org.example.netty_basecamp.domains.coupon.domain.Coupon;
+import org.example.netty_basecamp.domains.coupon.domain.CouponRepository;
 
 import java.util.HashMap;
 import java.util.Map;
