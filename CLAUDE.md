@@ -139,4 +139,5 @@ Request → HttpServerCodec → HttpObjectAggregator → HttpRoutingHandler
 Details specs in `docs/` - Claude reads these on-demand hwen relavant:
 - `docs/api-spec.md` - API endpoints, schemas, enums
 - `docs/commit-template.md` - commit template
-- `docs/decisions.ms` - working history
+- `docs/decisions.md` - working history
+- `docs/todo/` - 오늘 날짜에 해당하는 todo 파일을 읽어서 작업을 해야함. 
