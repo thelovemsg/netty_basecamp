@@ -2,13 +2,14 @@ package org.example.netty_basecamp.netty.rest;
 
 import org.example.netty_basecamp.domain.member.domain.Members;
 import org.example.netty_basecamp.netty.rest.config.MemberRouteConfig;
+import org.example.netty_basecamp.netty.rest.route.RequestContext;
+import org.example.netty_basecamp.netty.rest.route.RouteMatch;
+import org.example.netty_basecamp.netty.rest.route.RouteRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -29,8 +30,9 @@ class MemberRouteConfigTest {
         String body = """
                 {"name":"홍길동","address":"서울","age":30}""";
 
-        RouteEntry entry = registry.find("POST", "/api/members");
-        Members created = (Members) entry.handle(Map.of(), body);
+        RouteMatch match = registry.find("POST", "/api/members");
+        RequestContext ctx = requestContext(match, body);
+        Members created = (Members) match.getEntry().handle(ctx);
 
         assertThat(created.getId()).isEqualTo(1L);
         assertThat(created.getName()).isEqualTo("홍길동");
@@ -48,8 +50,9 @@ class MemberRouteConfigTest {
         createMember("김철수", "부산", 25);
 
         // when
-        RouteEntry entry = registry.find("GET", "/api/members");
-        List<Members> members = (List<Members>) entry.handle(Map.of(), "");
+        RouteMatch match = registry.find("GET", "/api/members");
+        RequestContext ctx = requestContext(match, "");
+        List<Members> members = (List<Members>) match.getEntry().handle(ctx);
 
         // then
         assertThat(members).hasSize(2);
@@ -62,9 +65,9 @@ class MemberRouteConfigTest {
         createMember("홍길동", "서울", 30);
 
         // when
-        Map<String, String> params = new HashMap<>();
-        RouteEntry entry = registry.find("GET", "/api/members/1", params);
-        Members found = (Members) entry.handle(params, "");
+        RouteMatch match = registry.find("GET", "/api/members/1");
+        RequestContext ctx = requestContext(match, "");
+        Members found = (Members) match.getEntry().handle(ctx);
 
         // then
         assertThat(found.getName()).isEqualTo("홍길동");
@@ -79,9 +82,9 @@ class MemberRouteConfigTest {
                 {"name":"수정됨","address":"부산","age":31}""";
 
         // when
-        Map<String, String> params = new HashMap<>();
-        RouteEntry entry = registry.find("PUT", "/api/members/1", params);
-        Members updated = (Members) entry.handle(params, updateBody);
+        RouteMatch match = registry.find("PUT", "/api/members/1");
+        RequestContext ctx = requestContext(match, updateBody);
+        Members updated = (Members) match.getEntry().handle(ctx);
 
         // then
         assertThat(updated.getId()).isEqualTo(1L);
@@ -96,14 +99,14 @@ class MemberRouteConfigTest {
         createMember("홍길동", "서울", 30);
 
         // when
-        Map<String, String> params = new HashMap<>();
-        RouteEntry entry = registry.find("DELETE", "/api/members/1", params);
-        entry.handle(params, "");
+        RouteMatch match = registry.find("DELETE", "/api/members/1");
+        RequestContext ctx = requestContext(match, "");
+        match.getEntry().handle(ctx);
 
         // then — 삭제 후 조회 시 예외
-        Map<String, String> getParams = new HashMap<>();
-        RouteEntry getEntry = registry.find("GET", "/api/members/1", getParams);
-        assertThatThrownBy(() -> getEntry.handle(getParams, ""))
+        RouteMatch getMatch = registry.find("GET", "/api/members/1");
+        RequestContext getCtx = requestContext(getMatch, "");
+        assertThatThrownBy(() -> getMatch.getEntry().handle(getCtx))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("not found");
     }
@@ -111,10 +114,10 @@ class MemberRouteConfigTest {
     @Test
     @DisplayName("존재하지 않는 회원 조회 시 IllegalArgumentException이 발생한다")
     void 존재하지_않는_회원_조회() {
-        Map<String, String> params = new HashMap<>();
-        RouteEntry entry = registry.find("GET", "/api/members/999", params);
+        RouteMatch match = registry.find("GET", "/api/members/999");
+        RequestContext ctx = requestContext(match, "");
 
-        assertThatThrownBy(() -> entry.handle(params, ""))
+        assertThatThrownBy(() -> match.getEntry().handle(ctx))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("not found");
     }
@@ -122,9 +125,10 @@ class MemberRouteConfigTest {
     @Test
     @DisplayName("잘못된 JSON body로 요청하면 IllegalArgumentException이 발생한다")
     void 잘못된_JSON() {
-        RouteEntry entry = registry.find("POST", "/api/members");
+        RouteMatch match = registry.find("POST", "/api/members");
+        RequestContext ctx = requestContext(match, "invalid json");
 
-        assertThatThrownBy(() -> entry.handle(Map.of(), "invalid json"))
+        assertThatThrownBy(() -> match.getEntry().handle(ctx))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Invalid JSON");
     }
@@ -132,7 +136,14 @@ class MemberRouteConfigTest {
     private void createMember(String name, String address, int age) {
         String body = String.format("""
                 {"name":"%s","address":"%s","age":%d}""", name, address, age);
-        RouteEntry entry = registry.find("POST", "/api/members");
-        entry.handle(Map.of(), body);
+        RouteMatch match = registry.find("POST", "/api/members");
+        match.getEntry().handle(requestContext(match, body));
+    }
+
+    private RequestContext requestContext(RouteMatch match, String body) {
+        return RequestContext.builder()
+                .pathVariables(match.getPathVariables())
+                .body(body)
+                .build();
     }
 }

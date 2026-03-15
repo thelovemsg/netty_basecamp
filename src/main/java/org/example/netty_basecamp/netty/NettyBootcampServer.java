@@ -8,7 +8,7 @@ import io.netty.handler.ssl.SslContext;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.example.netty_basecamp.netty.channel.CustomChannelInitializer;
-import org.example.netty_basecamp.netty.rest.RouteRegistry;
+import org.example.netty_basecamp.netty.rest.route.RouteRegistry;
 import org.example.netty_basecamp.netty.util.ServerUtil;
 
 public class NettyBootcampServer {

@@ -1,4 +1,4 @@
-package org.example.netty_basecamp.netty.rest;
+package org.example.netty_basecamp.netty.rest.route;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.buffer.ByteBuf;
@@ -9,7 +9,12 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.*;
 import io.netty.util.CharsetUtil;
 
+import org.example.netty_basecamp.netty.rest.filter.RouteFilter;
+import org.example.netty_basecamp.netty.rest.filter.UnauthorizedException;
+
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
@@ -19,10 +24,16 @@ import static io.netty.handler.codec.http.HttpResponseStatus.*;
 public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private final RouteRegistry registry;
+    private final List<RouteFilter> filters;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public HttpRoutingHandler(RouteRegistry registry) {
+        this(registry, List.of());
+    }
+
+    public HttpRoutingHandler(RouteRegistry registry, List<RouteFilter> filters) {
         this.registry = registry;
+        this.filters = new ArrayList<>(filters);
     }
 
     @Override
@@ -30,20 +41,30 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
         String path = extractPath(request.uri());
         String method = request.method().name();
 
-        Map<String, String> pathParams = new HashMap<>();
-        RouteEntry entry = registry.find(method, path, pathParams);
-        if (entry == null) {
+        RouteMatch match = registry.find(method, path);
+        if (match == null) {
             sendJson(ctx, NOT_FOUND, Map.of("error", "Not Found"));
             return;
         }
 
         try {
-            Map<String, String> params = extractParams(request.uri());
-            params.putAll(pathParams);
-            String body = request.content().toString(CharsetUtil.UTF_8);
+            RequestContext requestContext = RequestContext.builder()
+                    .method(method)
+                    .path(path)
+                    .pathVariables(match.getPathVariables())
+                    .queryParams(extractQueryParams(request.uri()))
+                    .headers(extractHeaders(request.headers()))
+                    .body(request.content().toString(CharsetUtil.UTF_8))
+                    .build();
 
-            Object result = entry.handle(params, body);
+            for (RouteFilter filter : filters) {
+                requestContext = filter.filter(requestContext);
+            }
+
+            Object result = match.getEntry().handle(requestContext);
             sendJson(ctx, OK, result);
+        } catch (UnauthorizedException e) {
+            sendJson(ctx, UNAUTHORIZED, Map.of("error", e.getMessage()));
         } catch (IllegalArgumentException e) {
             sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()));
         } catch (Exception e) {
@@ -56,11 +77,17 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
         return idx == -1 ? uri : uri.substring(0, idx);
     }
 
-    private Map<String, String> extractParams(String uri) {
+    private Map<String, String> extractQueryParams(String uri) {
         QueryStringDecoder decoder = new QueryStringDecoder(uri);
         Map<String, String> params = new HashMap<>();
         decoder.parameters().forEach((k, v) -> params.put(k, v.getFirst()));
         return params;
+    }
+
+    private Map<String, String> extractHeaders(HttpHeaders headers) {
+        Map<String, String> headerMap = new HashMap<>();
+        headers.forEach(entry -> headerMap.put(entry.getKey(), entry.getValue()));
+        return headerMap;
     }
 
     private void sendJson(ChannelHandlerContext ctx,

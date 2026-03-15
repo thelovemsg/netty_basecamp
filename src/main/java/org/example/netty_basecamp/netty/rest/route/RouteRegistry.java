@@ -1,4 +1,4 @@
-package org.example.netty_basecamp.netty.rest;
+package org.example.netty_basecamp.netty.rest.route;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -18,15 +18,11 @@ public class RouteRegistry {
         return this;
     }
 
-    public RouteEntry find(String method, String path) {
-        return find(method, path, null);
-    }
-
-    public RouteEntry find(String method, String path, Map<String, String> pathParams) {
+    public RouteMatch find(String method, String path) {
         // 1. 정확 매칭 우선
         RouteEntry exact = exactRoutes.get(method + " " + path);
         if (exact != null) {
-            return exact;
+            return new RouteMatch(exact, Map.of());
         }
 
         // 2. Path variable 패턴 매칭
@@ -36,10 +32,7 @@ public class RouteRegistry {
             }
             Map<String, String> extracted = new HashMap<>();
             if (entry.matches(path, extracted)) {
-                if (pathParams != null) {
-                    pathParams.putAll(extracted);
-                }
-                return entry;
+                return new RouteMatch(entry, extracted);
             }
         }
         return null;

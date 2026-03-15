@@ -6,8 +6,8 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.ssl.SslContext;
-import org.example.netty_basecamp.netty.rest.HttpRoutingHandler;
-import org.example.netty_basecamp.netty.rest.RouteRegistry;
+import org.example.netty_basecamp.netty.rest.route.HttpRoutingHandler;
+import org.example.netty_basecamp.netty.rest.route.RouteRegistry;
 
 public class CustomChannelInitializer extends ChannelInitializer<Channel>{
 

@@ -1,19 +1,19 @@
-package org.example.netty_basecamp.netty.rest;
+package org.example.netty_basecamp.netty.rest.route;
 
 import io.netty.handler.codec.http.HttpMethod;
 
 import java.util.Map;
-import java.util.function.BiFunction;
+import java.util.function.Function;
 
 public class RouteEntry {
     private final String httpMethod;
     private final String path;
     private final String[] pathSegments;
     private final boolean hasPathVariable;
-    private final BiFunction<Map<String, String>, String, Object> handler;
+    private final Function<RequestContext, Object> handler;
 
     public RouteEntry(HttpMethod method, String path,
-                      BiFunction<Map<String, String>, String, Object> handler) {
+                      Function<RequestContext, Object> handler) {
         this.httpMethod = method.name();
         this.path = path;
         this.pathSegments = path.split("/");
@@ -55,7 +55,7 @@ public class RouteEntry {
         return true;
     }
 
-    public Object handle(Map<String, String> params, String body) {
-        return handler.apply(params, body);
+    public Object handle(RequestContext ctx) {
+        return handler.apply(ctx);
     }
 }
