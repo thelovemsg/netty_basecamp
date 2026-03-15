@@ -11,6 +11,7 @@
 1. [ADR-001: RequestContext 도입 — BiFunction 핸들러 제거](#adr-001)
 2. [ADR-002: RouteMatch 도입 — RouteRegistry 매칭 결과 정리](#adr-002)
 3. [ADR-003: AuthFilter 최소 구조 도입](#adr-003)
+4. [ADR-004: EventLoop 블로킹 이슈 — Phase 2 진입 시 해결 필요](#adr-004)
 
 ---
 
@@ -89,3 +90,75 @@ RouteMatch match = registry.find(method, path);
 ### 판단 근거
 - 학습 프로젝트에서 중요한 건 "이런 구조가 가능하구나"를 확인하는 것
 - 확장 가능성만 열어두되, 실제로 필터를 여러 개 쌓을 일이 오면 그때 고민해도 늦지 않음
+
+---
+
+## ADR-004: EventLoop 블로킹 이슈 — Phase 2 진입 시 해결 필요 {#adr-004}
+**날짜**: 2026-03-15
+**상태**: 대기 (Phase 2 진입 시 착수)
+
+### 문제
+현재 `HttpRoutingHandler.channelRead0()`에서 도메인 로직이 **Netty Worker EventLoop 스레드에서 직접 실행**된다.
+
+```
+Worker EventLoop 스레드 (4개)
+  └── channelRead0()
+        ├── RequestContext 생성
+        ├── Filter 실행
+        ├── match.getEntry().handle(ctx)
+        │     └── ApplicationService → Repository.save()  ← 블로킹 지점
+        └── sendJson()
+```
+
+- **현재(Phase 1)**: `InMemoryMemberRepository`(ConcurrentHashMap)라서 논블로킹, 문제 없음
+- **Phase 2(RDBMS)부터**: JDBC 호출이 50~200ms 블로킹 → Worker 스레드 4개가 DB I/O에 점유됨 → 전체 서버 처리량 급감
+- Netty의 **"EventLoop를 절대 블로킹하지 마라"** 원칙 위반
+
+### 왜 위험한가
+| 상황 | Worker 스레드 상태 | 결과 |
+|------|-------------------|------|
+| InMemory (현재) | ~0ms, 즉시 반환 | 정상 |
+| JDBC 단건 조회 | ~10ms 블로킹 | 체감 없음 |
+| JDBC 트랜잭션 (락 포함) | 50~200ms 블로킹 | Worker 4개 고갈 → 신규 요청 큐잉 |
+| 선착순 쿠폰 오픈런 | 비관적 락 대기 | Worker 전부 멈춤 → 서버 무응답 |
+
+### 해결 방향 (Phase 2 착수 시)
+
+**방법 1: `DefaultEventExecutorGroup` 사용**
+```java
+// CustomChannelInitializer
+EventExecutorGroup businessGroup = new DefaultEventExecutorGroup(16);
+p.addLast(businessGroup, new HttpRoutingHandler(registry));
+```
+- Netty가 제공하는 가장 간단한 방법
+- `HttpRoutingHandler`의 `channelRead0()`가 별도 스레드풀에서 실행됨
+- 코드 변경 최소 (1줄 추가)
+
+**방법 2: 핸들러 내부에서 직접 오프로드**
+```java
+// HttpRoutingHandler 내부
+private final ExecutorService blockingPool = Executors.newFixedThreadPool(16);
+
+protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
+    // RequestContext 생성은 EventLoop에서 (가벼운 작업)
+    RequestContext requestContext = buildContext(request);
+
+    blockingPool.submit(() -> {
+        Object result = match.getEntry().handle(requestContext);
+        ctx.writeAndFlush(buildResponse(result));  // EventLoop로 돌아감
+    });
+}
+```
+- 더 세밀한 제어 가능 (어떤 라우트만 오프로드 등)
+- 코드 변경 多
+
+### 판단
+- Phase 1에서는 **현 상태 유지** (InMemory라 문제 없음)
+- Phase 2 RDBMS 도입 시 **방법 1(`DefaultEventExecutorGroup`)로 시작** → 부족하면 방법 2로 전환
+- `CustomChannelInboundHandler`, `CustomChannelOutboundHandler`는 현재 빈 껍데기이며 파이프라인 위치상 호출도 안 됨 → Phase 2 시점에 역할 재정의 또는 삭제 결정
+
+### 관련 파일
+- `netty/channel/CustomChannelInitializer.java` — 파이프라인 구성
+- `netty/rest/route/HttpRoutingHandler.java` — 블로킹 발생 지점
+- `netty/channel/CustomChannelInboundHandler.java` — 빈 껍데기 (미사용)
+- `netty/channel/CustomChannelOutboundHandler.java` — 빈 껍데기 (미사용)
