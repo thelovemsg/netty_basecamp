@@ -132,4 +132,11 @@ Request → HttpServerCodec → HttpObjectAggregator → HttpRoutingHandler
 1. **DDD Aggregate가 Netty EventLoop 스레드 모델과 충돌하지 않는가?**
 2. **Repository 인터페이스만으로 도메인을 완전히 격리할 수 있는가?**
 3. **ApplicationService가 Spring DI 없이도 Netty 핸들러와 자연스럽게 연결되는가?**
-4. **고트래픽(선착순 쿠폰)에서 Inventory VO의 원자성을 어떻게 보장할 것인가?**
+4. **고트래픽(선착순 쿠폰)에서 Inventory VO의 원자성을 어떻게 보장할 것인가?*
+
+## Reference Docs
+
+Details specs in `docs/` - Claude reads these on-demand hwen relavant:
+- `docs/api-spec.md` - API endpoints, schemas, enums
+- `docs/commit-template.md` - commit template
+- `docs/decisions.ms` - working history
