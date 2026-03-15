@@ -8,18 +8,51 @@ import java.util.function.BiFunction;
 public class RouteEntry {
     private final String httpMethod;
     private final String path;
+    private final String[] pathSegments;
+    private final boolean hasPathVariable;
     private final BiFunction<Map<String, String>, String, Object> handler;
-    // params(쿼리스트링), body(JSON) → 결과 객체
 
     public RouteEntry(HttpMethod method, String path,
                       BiFunction<Map<String, String>, String, Object> handler) {
         this.httpMethod = method.name();
         this.path = path;
+        this.pathSegments = path.split("/");
+        this.hasPathVariable = path.contains("{");
         this.handler = handler;
     }
 
     public String getKey() {
         return httpMethod + " " + path;
+    }
+
+    public String getHttpMethod() {
+        return httpMethod;
+    }
+
+    public boolean hasPathVariable() {
+        return hasPathVariable;
+    }
+
+    /**
+     * 요청 경로가 이 라우트 패턴과 매칭되는지 확인하고,
+     * 매칭되면 path variable 값을 params에 추가한다.
+     */
+    public boolean matches(String requestPath, Map<String, String> params) {
+        String[] requestSegments = requestPath.split("/");
+        if (requestSegments.length != pathSegments.length) {
+            return false;
+        }
+        for (int i = 0; i < pathSegments.length; i++) {
+            String pattern = pathSegments[i];
+            String actual = requestSegments[i];
+            if (pattern.startsWith("{") && pattern.endsWith("}")) {
+                String varName = pattern.substring(1, pattern.length() - 1);
+                params.put(varName, actual);
+            } else if (!pattern.equals(actual)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public Object handle(Map<String, String> params, String body) {

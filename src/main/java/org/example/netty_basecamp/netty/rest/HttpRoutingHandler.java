@@ -30,7 +30,8 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
         String path = extractPath(request.uri());
         String method = request.method().name();
 
-        RouteEntry entry = registry.find(method, path);
+        Map<String, String> pathParams = new HashMap<>();
+        RouteEntry entry = registry.find(method, path, pathParams);
         if (entry == null) {
             sendJson(ctx, NOT_FOUND, Map.of("error", "Not Found"));
             return;
@@ -38,10 +39,13 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
 
         try {
             Map<String, String> params = extractParams(request.uri());
+            params.putAll(pathParams);
             String body = request.content().toString(CharsetUtil.UTF_8);
 
             Object result = entry.handle(params, body);
             sendJson(ctx, OK, result);
+        } catch (IllegalArgumentException e) {
+            sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()));
         } catch (Exception e) {
             sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", e.getMessage()));
         }
@@ -59,7 +63,7 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
         return params;
     }
 
-    private void sendJson(ChannelHandlerContext ctx, 
+    private void sendJson(ChannelHandlerContext ctx,
                            HttpResponseStatus status, Object body) {
         try {
             String json = objectMapper.writeValueAsString(body);
