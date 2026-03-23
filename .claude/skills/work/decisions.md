@@ -284,6 +284,7 @@ domains/member/
 
 ## ADR-007: 리플렉션 없이 명시적 타입 변환 유지 {#adr-007}
 **날짜**: 2026-03-15
+**보강**: 2026-03-22 (성능적·구조적 근거 추가)
 
 ### 논의 배경
 - Controller에서 `ctx.readBody(MembersCreate.class)` 호출이 반복되고, 반환 타입이 `Object`인 것이 아쉬움
@@ -302,9 +303,61 @@ domains/member/
 - 반환 타입 `Object`도 현재 수준에서는 허용
 
 ### 판단 근거
+
+#### 1. 프로젝트 목적과의 정합성
 - 프로젝트 목적이 "Spring 없이 순수 Netty + DDD" 검증
 - 리플렉션 도입 시 어노테이션 → 스캐너 → 파라미터 리졸버 → 타입 변환기로 이어져 Spring MVC를 재발명하게 됨
 - 학습 프로젝트에서 중요한 건 구조의 본질을 이해하는 것이지, 편의 기능을 만드는 것이 아님
+
+#### 2. 리플렉션의 성능적 비용 — Netty 핫 패스에서 치명적
+우리 서버의 핫 패스(Hot Path):
+```
+EventLoop → channelRead0() → RouteRegistry → Controller → ApplicationService
+```
+이 경로에서 리플렉션이 유발하는 4가지 성능 손해:
+
+**JIT 인라이닝 실패**: 명시적 메서드 호출(`controller::update`)은 JIT 컴파일러가 호출 대상을 특정할 수 있어 인라이닝(코드 병합) 가능. 리플렉션(`Method.invoke()`)은 호출 대상이 런타임에 결정되는 불투명한 블랙박스 → JIT가 최적화를 포기하여 메가모픽(Megamorphic) 상태로 전락.
+
+**박싱/GC 폭발**: `Method.invoke()`는 모든 인자를 `Object[]` 가변인자로 받음 → `long id` 같은 원시 타입이 `Long`으로 박싱 → 매 요청마다 단기 생명주기 임시 객체 대량 생성 → GC 압박 → Stop-the-World 지연. Netty가 ByteBuf 풀링으로 Zero GC를 추구하는 철학과 정면 충돌.
+
+**보안 검사 반복**: 명시적 호출은 컴파일 타임에 접근 권한 검증 완료. 리플렉션은 `invoke()` 호출 때마다 런타임 보안 검사 수행 → 매 요청마다 불필요한 오버헤드.
+
+**런타임 타입 탐색**: 문자열 기반으로 메서드 테이블을 뒤져 이름·파라미터 타입을 동적 매칭 → 컴파일 타임에 고정 오프셋으로 직접 점프하는 것과 비교 불가.
+
+| 비교 항목 | 명시적 직접 호출 | 리플렉션 호출 |
+|-----------|-----------------|--------------|
+| 대상 확인 시점 | 컴파일 타임 | 런타임 (문자열 기반) |
+| JIT 인라이닝 | 완벽한 코드 병합 | 최적화 실패 |
+| 데이터 타입 | 원시 타입 직접 사용 | 박싱/언박싱 강제 |
+| GC 부하 | Zero GC | 임시 객체 대량 발생 |
+| 보안 검사 | 1회 (컴파일/로드 시) | 매 호출마다 반복 |
+
+#### 3. 어노테이션의 구조적 비용 — DDD 계층 오염
+- **제어 흐름 은닉**: 어노테이션으로 라우팅이 엮이면 코드를 위→아래로 읽어도 실행 경로를 추적할 수 없음 (블랙박스화)
+- **DDD 레이어 오염**: `@RequestBody`, `@PathVariable` 등이 Controller에 침투하면 도메인 계층이 프레임워크에 종속 → 헥사고날 아키텍처의 의존성 방향 원칙 위반
+- **디버깅 고통**: 예외 스택 트레이스가 프록시·CGLIB·AOP 인터셉터로 도배 → 실제 문제 지점 파악 난해
+- **테스트 복잡도**: 어노테이션 파싱을 위해 프레임워크 컨테이너 전체 구동 필요 → 단위 테스트 불가
+
+#### 4. Netty ChannelPipeline이 이미 해답
+우리 프로젝트는 Netty 파이프라인 자체가 명시적 필터 체인 역할을 함 (ADR-003):
+```java
+pipeline.addLast(new HttpServerCodec());
+pipeline.addLast(new HttpObjectAggregator(65536));
+pipeline.addLast(new AuthChannelInboundHandler());
+pipeline.addLast(new HttpRoutingHandler(registry));
+```
+- 핸들러 순서가 코드에 그대로 드러남 → 자체 문서화(Self-documenting)
+- `ctx.fireChannelRead()`로 다음 핸들러 호출 → 리플렉션 없는 순수 메서드 체인 → JIT 인라이닝 최적화 가능
+- `@Sharable` 같은 Netty의 어노테이션도 자동 라우팅용이 아닌 스레드 안전성 보증 표식일 뿐
+
+#### 5. Hot Path vs Cold Path 관점
+- **Cold Path** (서버 부팅 시 1회): `AppConfig` → `RouteConfig` → `RouteRegistry` 등록. 이 구간에서 리플렉션을 쓴다 해도 성능 영향 미미
+- **Hot Path** (매 요청마다): `EventLoop → Auth → Routing → Controller → Service`. 이 구간에서 리플렉션은 절대 불가
+- Spring WebFlux도 핫 패스 코어는 Netty 파이프라인이 처리하고, 어노테이션 라우팅은 그 위의 추상화 계층에서 성능을 '세금'으로 지불하는 구조
+- 우리 프로젝트는 그 세금조차 걷어내고 Netty 본연의 성능을 체감하는 것이 목적
+
+### 참고 자료
+- [Netty 극한 성능과 명시적 제어 철학 분석](https://docs.google.com/document/d/174oaq8qL1BQhYwVk-gKNpUmJR9IX67wKTOifBXwjNQc) — 리플렉션 비용, JIT 인라이닝, Hot/Cold Path 상세 분석
 
 ---
 
