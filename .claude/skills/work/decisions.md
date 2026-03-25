@@ -106,12 +106,13 @@ HttpServerCodec → Aggregator → [AuthHandler] → HttpRoutingHandler
 
 ---
 
-## ADR-004: EventLoop 블로킹 이슈 — Phase 2 진입 시 해결 필요 {#adr-004}
+## ADR-004: EventLoop 블로킹 대응 — `DefaultEventExecutorGroup`으로 오프로드 {#adr-004}
 **날짜**: 2026-03-15
-**상태**: 대기 (Phase 2 진입 시 착수)
+**수정**: 2026-03-25 (InMemory 폐기 확정 → 방법 1 확정, 방법 2 기각)
+**상태**: 확정
 
 ### 문제
-현재 `HttpRoutingHandler.channelRead0()`에서 도메인 로직이 **Netty Worker EventLoop 스레드에서 직접 실행**된다.
+`HttpRoutingHandler.channelRead0()`에서 도메인 로직이 **Netty Worker EventLoop 스레드에서 직접 실행**된다.
 
 ```
 Worker EventLoop 스레드 (4개)
@@ -123,21 +124,20 @@ Worker EventLoop 스레드 (4개)
         └── sendJson()
 ```
 
-- **현재(Phase 1)**: `InMemoryMemberRepository`(ConcurrentHashMap)라서 논블로킹, 문제 없음
-- **Phase 2(RDBMS)부터**: JDBC 호출이 50~200ms 블로킹 → Worker 스레드 4개가 DB I/O에 점유됨 → 전체 서버 처리량 급감
+- JDBC 호출이 50~200ms 블로킹 → Worker 스레드 4개가 DB I/O에 점유됨 → 전체 서버 처리량 급감
+- 선착순 쿠폰 오픈런 시 비관적 락 대기 → Worker 전부 멈춤 → 서버 무응답
 - Netty의 **"EventLoop를 절대 블로킹하지 마라"** 원칙 위반
 
 ### 왜 위험한가
 | 상황 | Worker 스레드 상태 | 결과 |
 |------|-------------------|------|
-| InMemory (현재) | ~0ms, 즉시 반환 | 정상 |
 | JDBC 단건 조회 | ~10ms 블로킹 | 체감 없음 |
 | JDBC 트랜잭션 (락 포함) | 50~200ms 블로킹 | Worker 4개 고갈 → 신규 요청 큐잉 |
 | 선착순 쿠폰 오픈런 | 비관적 락 대기 | Worker 전부 멈춤 → 서버 무응답 |
 
-### 해결 방향 (Phase 2 착수 시)
+### 검토한 방법
 
-**방법 1: `DefaultEventExecutorGroup` 사용**
+**방법 1: `DefaultEventExecutorGroup` 사용 (채택)**
 ```java
 // CustomChannelInitializer
 EventExecutorGroup businessGroup = new DefaultEventExecutorGroup(16);
@@ -147,28 +147,28 @@ p.addLast(businessGroup, new HttpRoutingHandler(registry));
 - `HttpRoutingHandler`의 `channelRead0()`가 별도 스레드풀에서 실행됨
 - 코드 변경 최소 (1줄 추가)
 
-**방법 2: 핸들러 내부에서 직접 오프로드**
+**방법 2: 핸들러 내부에서 직접 오프로드 (기각)**
 ```java
 // HttpRoutingHandler 내부
 private final ExecutorService blockingPool = Executors.newFixedThreadPool(16);
 
 protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
-    // RequestContext 생성은 EventLoop에서 (가벼운 작업)
     RequestContext requestContext = buildContext(request);
-
     blockingPool.submit(() -> {
         Object result = match.getEntry().handle(requestContext);
-        ctx.writeAndFlush(buildResponse(result));  // EventLoop로 돌아감
+        ctx.writeAndFlush(buildResponse(result));
     });
 }
 ```
-- 더 세밀한 제어 가능 (어떤 라우트만 오프로드 등)
-- 코드 변경 多
+- `HttpRoutingHandler` 안에서 별도 `ExecutorService`를 직접 생성하여, 블로킹 로직만 `submit()`으로 넘기는 방식
+- 라우트 단위로 "이 API만 오프로드, 저 API는 EventLoop에서 직접" 같은 세밀한 제어가 가능
+- 일부 API만 DB를 타고 나머지는 인메모리일 때 유효한 전략
 
-### 판단
-- Phase 1에서는 **현 상태 유지** (InMemory라 문제 없음)
-- Phase 2 RDBMS 도입 시 **방법 1(`DefaultEventExecutorGroup`)로 시작** → 부족하면 방법 2로 전환
-- `CustomChannelInboundHandler`, `CustomChannelOutboundHandler`는 현재 빈 껍데기이며 파이프라인 위치상 호출도 안 됨 → Phase 2 시점에 역할 재정의 또는 삭제 결정
+### 결정: 방법 1 확정
+- **InMemory 저장소를 사용하지 않고 모든 Repository가 RDBMS를 사용**하기로 확정
+- 모든 요청이 JDBC를 타므로 라우트별 오프로드 제어가 무의미 → 방법 2의 세밀함이 불필요
+- 방법 1은 파이프라인 설정 1줄로 `HttpRoutingHandler` 전체를 별도 스레드풀에서 실행 → 가장 단순하고 충분
+- `CustomChannelInboundHandler`, `CustomChannelOutboundHandler`는 빈 껍데기이며 파이프라인 위치상 호출도 안 됨 → RDBMS 도입 시점에 역할 재정의 또는 삭제 결정
 
 ### 관련 파일
 - `netty/channel/CustomChannelInitializer.java` — 파이프라인 구성
