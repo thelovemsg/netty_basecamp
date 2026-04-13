@@ -1,11 +1,11 @@
 package org.example.netty_basecamp.domains.coupon.application;
 
-import org.example.netty_basecamp.domains.common.vo.Money;
 import org.example.netty_basecamp.domains.coupon.domain.Coupon;
 import org.example.netty_basecamp.domains.coupon.domain.IssuedCoupon;
 import org.example.netty_basecamp.domains.coupon.domain.service.CouponIssueDomainService;
 import org.example.netty_basecamp.domains.coupon.domain.CouponRepository;
 import org.example.netty_basecamp.domains.fare.domain.Fare;
+import org.example.netty_basecamp.domains.fare.domain.calculation.FareCalculationContext;
 import org.example.netty_basecamp.domains.fare.domain.policy.FarePolicy;
 import org.example.netty_basecamp.domains.fare.domain.service.FareCalculationDomainService;
 import org.example.netty_basecamp.domains.fare.domain.FarePolicyRepository;
@@ -31,16 +31,25 @@ public class CouponIssueApplicationService {
         this.couponIssueDomainService = couponIssueDomainService;
     }
 
-    public IssuedCoupon issueCoupon(Long fareId, Long couponId, Long memberId) {
+    public CouponIssueResult issueCoupon(Long fareId, Long couponId, Long memberId) {
         // 인프라에서 꺼내고
         Fare fare = fareRepository.findById(fareId);
         List<FarePolicy> policies = farePolicyRepository.findByFareId(fareId);
         Coupon coupon = couponRepository.findById(couponId);
 
-        // 도메인한테 시키고
-        Money finalPrice = fareCalculationDomainService.calculateFinalPrice(fare, policies);
+        // 요금 계산 — 컨텍스트 전체 보존
+        FareCalculationContext context = fareCalculationDomainService.calculate(fare, policies);
 
-        // 도메인한테 시키고
-        return couponIssueDomainService.issueToMember(coupon, memberId, finalPrice);
+        // 쿠폰 발급
+        IssuedCoupon issuedCoupon = couponIssueDomainService.issueToMember(coupon, memberId, context.getCurrentPrice());
+
+        return new CouponIssueResult(
+                issuedCoupon,
+                fare.getId(),
+                fare.getName(),
+                context.getOriginalPrice(),
+                context.getCurrentPrice(),
+                context.getAppliedPolicyDescriptions()
+        );
     }
 }

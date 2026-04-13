@@ -12,12 +12,17 @@ import org.example.netty_basecamp.netty.channel.AuthChannelInboundHandler;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
 import static io.netty.handler.codec.http.HttpResponseStatus.*;
 
 public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
+
+    private static final ExecutorService VIRTUAL_EXECUTOR =
+            Executors.newVirtualThreadPerTaskExecutor();
 
     private final RouteRegistry registry;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -37,24 +42,28 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
             return;
         }
 
-        try {
-            RequestContext requestContext = RequestContext.builder()
-                    .method(method)
-                    .path(path)
-                    .pathVariables(match.getPathVariables())
-                    .queryParams(extractQueryParams(request.uri()))
-                    .headers(extractHeaders(request.headers()))
-                    .body(request.content().toString(CharsetUtil.UTF_8))
-                    .authInfo(ctx.channel().attr(AuthChannelInboundHandler.AUTH_KEY).get())
-                    .build();
+        // ByteBuf는 channelRead0 리턴 후 release()되므로 EventLoop 스레드에서 미리 복사
+        RequestContext requestContext = RequestContext.builder()
+                .method(method)
+                .path(path)
+                .pathVariables(match.getPathVariables())
+                .queryParams(extractQueryParams(request.uri()))
+                .headers(extractHeaders(request.headers()))
+                .body(request.content().toString(CharsetUtil.UTF_8))
+                .authInfo(ctx.channel().attr(AuthChannelInboundHandler.AUTH_KEY).get())
+                .build();
 
-            Object result = match.getEntry().handle(requestContext);
-            sendJson(ctx, OK, result);
-        } catch (IllegalArgumentException e) {
-            sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()));
-        } catch (Exception e) {
-            sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", e.getMessage()));
-        }
+        // 블로킹 가능한 도메인 로직을 Virtual Thread로 오프로드
+        VIRTUAL_EXECUTOR.submit(() -> {
+            try {
+                Object result = match.getEntry().handle(requestContext);
+                sendJson(ctx, OK, result);
+            } catch (IllegalArgumentException e) {
+                sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()));
+            } catch (Exception e) {
+                sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", e.getMessage()));
+            }
+        });
     }
 
     private String extractPath(String uri) {

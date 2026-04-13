@@ -1,14 +1,15 @@
-package org.example.netty_basecamp.fake.repository;
+package org.example.netty_basecamp.domains.fare.infrastructure;
 
 import org.example.netty_basecamp.domains.fare.domain.Fare;
 import org.example.netty_basecamp.domains.fare.domain.FareRepository;
 
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class FakeFareRepository implements FareRepository {
-    private final Map<Long, Fare> store = new HashMap<>();
+public class InMemoryFareRepository implements FareRepository {
+
+    private final Map<Long, Fare> store = new ConcurrentHashMap<>();
     private final AtomicLong sequence = new AtomicLong(1);
 
     @Override
