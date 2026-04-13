@@ -11,11 +11,13 @@
 1. [ADR-001: RequestContext 도입 — BiFunction 핸들러 제거](#adr-001)
 2. [ADR-002: RouteMatch 도입 — RouteRegistry 매칭 결과 정리](#adr-002)
 3. [ADR-003: AuthFilter 최소 구조 도입](#adr-003)
-4. [ADR-004: EventLoop 블로킹 이슈 — Phase 2 진입 시 해결 필요](#adr-004)
+4. [ADR-004: EventLoop 블로킹 대응 ~~(파기 → ADR-009 참조)~~](#adr-004)
 5. [ADR-005: Controller 레이어 분리 — Inbound Adapter 도입](#adr-005)
 6. [ADR-006: Repository 인터페이스를 domain 패키지로 이동 — 의존성 역전 적용](#adr-006)
 7. [ADR-007: 리플렉션 없이 명시적 타입 변환 유지](#adr-007)
 8. [ADR-008: 인증은 파이프라인 ChannelHandler, 인가는 Controller — AUTH_KEY 단일 전달](#adr-008)
+9. [ADR-009: EventLoop 블로킹 대응 재결정 — Java 21 Virtual Thread 오프로드](#adr-009)
+10. [ADR-010: ApplicationService에서 여러 Repository + DomainService를 함께 쓰는 것은 정상](#adr-010)
 
 ---
 
@@ -36,7 +38,7 @@
 ```java
 new RouteEntry(HttpMethod.GET, "/api/members/{id}",
     (params, body) -> memberService.findById(Long.parseLong(params.get("id"))))
-```
+```[decisions.md](decisions.md)
 
 ### After
 ```java
@@ -106,10 +108,11 @@ HttpServerCodec → Aggregator → [AuthHandler] → HttpRoutingHandler
 
 ---
 
-## ADR-004: EventLoop 블로킹 대응 — `DefaultEventExecutorGroup`으로 오프로드 {#adr-004}
+## ~~ADR-004: EventLoop 블로킹 대응 — `DefaultEventExecutorGroup`으로 오프로드~~ {#adr-004}
 **날짜**: 2026-03-15
 **수정**: 2026-03-25 (InMemory 폐기 확정 → 방법 1 확정, 방법 2 기각)
-**상태**: 확정
+**파기**: 2026-04-13 — Netty 4.2에서 `addLast(EventExecutorGroup, handler)` API 제거로 방법 1 실행 불가 → **ADR-009로 대체**
+**상태**: ~~파기~~
 
 ### 문제
 `HttpRoutingHandler.channelRead0()`에서 도메인 로직이 **Netty Worker EventLoop 스레드에서 직접 실행**된다.
@@ -411,3 +414,197 @@ HttpServerCodec → Aggregator → AuthChannelInboundHandler → HttpRoutingHand
 - `netty/rest/route/RequestContext.java` — `authInfo` 필드 추가
 - `netty/rest/route/HttpRoutingHandler.java` — AUTH_KEY에서 꺼내 RequestContext에 세팅
 - `netty/rest/controller/MemberController.java` — 인가 체크 TODO 예시
+
+---
+
+## ADR-009: EventLoop 블로킹 대응 재결정 — Java 21 Virtual Thread 오프로드 {#adr-009}
+**날짜**: 2026-04-13
+**상태**: 확정 + 구현 완료 (2026-04-13)
+**배경**: ADR-004 파기 (Netty 4.2에서 `addLast(EventExecutorGroup, handler)` API 제거)
+
+### 문제
+
+ADR-004에서 채택한 방법 1(`DefaultEventExecutorGroup`)이 **Netty 4.2에서 동작하지 않는다**.
+
+Netty 4.2는 `ChannelPipeline.addLast(EventExecutorGroup, ChannelHandler)` 오버로드를 제거했다.
+즉, 파이프라인 설정 한 줄로 핸들러 전체를 별도 스레드풀에 넘기는 방식이 더 이상 불가능하다.
+
+결과적으로 현재 `HttpRoutingHandler.channelRead0()`는 **Netty Worker EventLoop 스레드에서 직접 실행**되고 있으며, JDBC 도입 시 블로킹 문제가 그대로 남는다.
+
+```
+Worker EventLoop 스레드 (4개)
+  └── channelRead0()
+        └── match.getEntry().handle(requestContext)
+              └── ApplicationService → Repository (JDBC)  ← 여기서 블로킹
+```
+
+| 상황 | Worker 스레드 상태 | 결과 |
+|------|-------------------|------|
+| JDBC 단건 조회 | ~10ms 블로킹 | 체감 없음 |
+| JDBC 트랜잭션 (락 포함) | 50~200ms 블로킹 | Worker 4개 고갈 → 신규 요청 큐잉 |
+| 선착순 쿠폰 오픈런 | 비관적 락 대기 | Worker 전부 멈춤 → 서버 무응답 |
+
+### 검토한 대안
+
+**방법 A: `newFixedThreadPool`로 직접 오프로드**
+```java
+private static final ExecutorService BLOCKING_POOL =
+    Executors.newFixedThreadPool(16);
+```
+- 스레드 수를 예측해서 고정해야 함 — 과소하면 큐 쌓임, 과다하면 컨텍스트 스위칭 낭비
+- OS 스레드 1개 = blocking I/O 1개 대응 → 고트래픽 시 스레드 수가 병목
+
+**방법 B: Java 21 Virtual Thread (채택)**
+```java
+private static final ExecutorService VIRTUAL_EXECUTOR =
+    Executors.newVirtualThreadPerTaskExecutor();
+```
+- JVM이 virtual thread를 JDBC 블로킹 시점에 OS 스레드에서 `unmount` → carrier thread(OS 스레드)가 즉시 해방
+- OS 스레드는 4~8개로 고정, virtual thread는 수천 개가 동시에 블로킹 대기 가능
+- 스레드 풀 크기 튜닝 불필요 — JVM이 자동 관리
+- Java 21 정식 기능 (Project Loom), 이 프로젝트 스택과 완전 부합
+
+### 결정: 방법 B (Virtual Thread) 확정
+
+`HttpRoutingHandler.channelRead0()` 안에서 `RequestContext` 빌드까지는 **EventLoop 스레드에서 처리**하고, 블로킹 가능성이 있는 `handle()` 이후만 **Virtual Thread로 오프로드**한다.
+
+```java
+public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
+
+    private static final ExecutorService VIRTUAL_EXECUTOR =
+        Executors.newVirtualThreadPerTaskExecutor();
+
+    @Override
+    protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
+        String path = extractPath(request.uri());
+        String method = request.method().name();
+
+        RouteMatch match = registry.find(method, path);
+        if (match == null) {
+            sendJson(ctx, NOT_FOUND, Map.of("error", "Not Found"));
+            return;
+        }
+
+        // ★ ByteBuf 복사는 EventLoop 스레드에서 — channelRead0 리턴 후 release()되므로
+        RequestContext requestContext = RequestContext.builder()
+            .method(method)
+            .path(path)
+            .pathVariables(match.getPathVariables())
+            .queryParams(extractQueryParams(request.uri()))
+            .headers(extractHeaders(request.headers()))
+            .body(request.content().toString(CharsetUtil.UTF_8))
+            .authInfo(ctx.channel().attr(AuthChannelInboundHandler.AUTH_KEY).get())
+            .build();
+
+        // ★ 블로킹 가능한 도메인 로직만 virtual thread로 오프로드
+        VIRTUAL_EXECUTOR.submit(() -> {
+            try {
+                Object result = match.getEntry().handle(requestContext);
+                sendJson(ctx, OK, result);
+            } catch (IllegalArgumentException e) {
+                sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()));
+            } catch (Exception e) {
+                sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", e.getMessage()));
+            }
+        });
+    }
+}
+```
+
+### ByteBuf 복사를 EventLoop에서 해야 하는 이유
+
+`SimpleChannelInboundHandler`는 `channelRead0()` 리턴 직후 `request`의 `ByteBuf`를 자동으로 `release()`한다.
+`VIRTUAL_EXECUTOR.submit()` 이후 EventLoop 스레드는 즉시 리턴하므로, virtual thread 안에서 `request.content()`를 읽으면 이미 해제된 메모리를 참조하게 된다.
+
+따라서 `RequestContext` 빌드(ByteBuf → String 복사 포함)는 반드시 EventLoop 스레드에서 완료해야 한다.
+
+### Virtual Thread가 적합한 이유 — JDBC I/O 특성
+
+JDBC는 네트워크 소켓 I/O 위에서 동작한다. Java 21 Virtual Thread는 소켓 I/O 블로킹 시점에 JVM이 carrier thread를 자동 해방하도록 설계되어 있다 (Continuation 기반). 즉 "블로킹처럼 코드를 쓰되, 실제로는 비동기처럼 동작"한다.
+
+| 비교 항목 | `newFixedThreadPool(N)` | Virtual Thread |
+|-----------|------------------------|----------------|
+| OS 스레드 수 | N개 고정 | 소수의 carrier thread |
+| 동시 JDBC 블로킹 | N개까지만 | 사실상 무제한 |
+| 풀 크기 튜닝 | 필요 | 불필요 |
+| 오픈런 락 대기 | N초과 시 큐잉 | carrier thread 자동 해방 |
+
+### 관련 파일
+- `netty/rest/route/HttpRoutingHandler.java` — Virtual Thread 오프로드 적용 지점
+
+---
+
+## ADR-010: ApplicationService에서 여러 Repository + DomainService를 함께 쓰는 것은 정상 {#adr-010}
+**날짜**: 2026-04-13
+
+### 고민 배경
+`CouponIssueApplicationService`를 보면 `FareRepository`, `FarePolicyRepository`, `CouponRepository` 세 개의 Repository와
+`FareCalculationDomainService`, `CouponIssueDomainService` 두 개의 DomainService가 함께 주입되어 있다.
+"Repository랑 Service가 한 클래스에 섞여도 되는가?" 혼란이 생겼다.
+
+또한 Coupon 도메인인데 Fare 관련 의존이 섞인 이유도 불명확했다.
+
+### 왜 Coupon 발급에 Fare가 필요한가?
+
+비즈니스 요구사항: **쿠폰 발급 시점에 "실제 적용 금액"이 얼마인지 계산해서 IssuedCoupon에 기록해야 한다.**
+
+```
+Fare (기본 요금)
+  + List<FarePolicy> (할인/할증 정책들: 주말 할증, 장기 할인, 고정 할인...)
+  ↓ FareCalculationPipeline (정책을 우선순위 순으로 순차 적용)
+  = Money finalPrice
+  ↓
+IssuedCoupon (발급 이력에 finalPrice 박힘)
+```
+
+Coupon 발급은 "요금 계산 결과를 받아서 쿠폰에 적용"하는 유스케이스이므로,
+**Coupon 도메인이 Fare 도메인의 결과를 소비하는 것**은 자연스러운 의존이다.
+
+### ApplicationService에 Repository + DomainService가 섞여도 되는가?
+
+**된다. 오히려 ApplicationService가 해야 할 일이 그것이다.**
+
+| 레이어 | 알아야 하는 것 | 몰라야 하는 것 |
+|--------|---------------|--------------|
+| `ApplicationService` | 어디서 꺼내고(Repository), 무엇을 시키고(DomainService), 어디에 저장할지 | 도메인 내부 불변식 |
+| `DomainService` | 넘겨받은 도메인 객체 간의 도메인 규칙 | Repository, 인프라 |
+| `Repository` | 저장/조회 | 비즈니스 로직 |
+
+`CouponIssueDomainService`와 `FareCalculationDomainService`를 보면 둘 다 **Repository를 전혀 받지 않는다**.
+이미 꺼내진 도메인 객체(`Coupon`, `Fare`, `List<FarePolicy>`)만 받아서 도메인 규칙만 처리한다.
+
+ApplicationService가 "누가 무엇을 어떤 순서로" 를 조율하는 자리이기 때문에
+Repository 의존이 없으면 오히려 이상한 것이다.
+
+### 실제 흐름 정리
+
+```
+CouponIssueApplicationService.issueCoupon(fareId, couponId, memberId)
+│
+├── [인프라 접촉] Repository 세 개로 데이터 조회
+│       fareRepository.findById(fareId)           → Fare
+│       farePolicyRepository.findByFareId(fareId) → List<FarePolicy>
+│       couponRepository.findById(couponId)        → Coupon
+│
+├── [도메인 위임] FareCalculationDomainService
+│       .calculateFinalPrice(fare, policies)
+│       └── FareCalculationPipeline: 정책 순차 적용
+│       → Money finalPrice
+│
+└── [도메인 위임] CouponIssueDomainService
+        .issueToMember(coupon, memberId, finalPrice)
+        ├── coupon.reserve() — 재고 감소 (AR 내부에서 불변식 보호)
+        ├── numberGenerator.generate() — 발급번호 생성
+        └── IssuedCoupon.issue() — 발급 이력 엔티티 조립
+```
+
+### 판단 기준 — DomainService에 Repository가 있으면 냄새
+
+- `DomainService`가 Repository를 직접 주입받으면 → **ApplicationService의 역할을 침범한 것**
+- `ApplicationService`가 Repository를 주입받으면 → **정상 (오케스트레이션 책임)**
+
+### 관련 파일
+- `domains/coupon/application/CouponIssueApplicationService.java` — 오케스트레이션 진입점
+- `domains/coupon/domain/service/CouponIssueDomainService.java` — Repository 없음, 도메인 규칙만
+- `domains/fare/domain/service/FareCalculationDomainService.java` — Repository 없음, 계산 규칙만
+- `domains/fare/domain/calculation/FareCalculationPipeline.java` — 정책 파이프라인

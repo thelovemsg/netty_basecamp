@@ -104,7 +104,7 @@ class CouponIssueApplicationServiceTest {
     }
 
     private IssuedCoupon issueDefaultCoupon() {
-        return applicationService.issueCoupon(FARE_ID, COUPON_ID, MEMBER_ID);
+        return applicationService.issueCoupon(FARE_ID, COUPON_ID, MEMBER_ID).issuedCoupon();
     }
 
     // ========== 정책 없음 ==========
