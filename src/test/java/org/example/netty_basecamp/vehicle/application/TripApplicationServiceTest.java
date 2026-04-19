@@ -1,17 +1,17 @@
 package org.example.netty_basecamp.vehicle.application;
 
-import org.example.netty_basecamp.domains.vehicle.application.TripApplicationService;
-import org.example.netty_basecamp.domains.vehicle.domain.vo.Location;
-import org.example.netty_basecamp.domains.vehicle.domain.LocationSnapshot;
-import org.example.netty_basecamp.domains.vehicle.domain.Trip;
-import org.example.netty_basecamp.domains.vehicle.domain.enums.TripStatusEnum;
-import org.example.netty_basecamp.domains.vehicle.domain.Vehicle;
-import org.example.netty_basecamp.domains.vehicle.domain.dto.VehicleCreate;
-import org.example.netty_basecamp.domains.vehicle.domain.enums.VehicleStatusEnum;
-import org.example.netty_basecamp.domains.vehicle.domain.enums.VehicleTypeEnum;
+import org.example.netty_basecamp.cartracking.tracking.domain.Journey;
+import org.example.netty_basecamp.cartracking.tracking.domain.LocationSnapshot;
+import org.example.netty_basecamp.cartracking.tracking.domain.enums.JourneyStatusEnum;
+import org.example.netty_basecamp.cartracking.tracking.domain.vo.Location;
+import org.example.netty_basecamp.cartracking.vehicle.application.TripApplicationService;
+import org.example.netty_basecamp.cartracking.vehicle.domain.Vehicle;
+import org.example.netty_basecamp.cartracking.vehicle.domain.dto.VehicleCreate;
+import org.example.netty_basecamp.cartracking.vehicle.domain.enums.VehicleStatusEnum;
+import org.example.netty_basecamp.cartracking.vehicle.domain.enums.VehicleTypeEnum;
 import org.example.netty_basecamp.fake.generator.FakeTimeGenerator;
+import org.example.netty_basecamp.fake.repository.FakeJourneyRepository;
 import org.example.netty_basecamp.fake.repository.FakeLocationSnapshotRepository;
-import org.example.netty_basecamp.fake.repository.FakeTripRepository;
 import org.example.netty_basecamp.fake.repository.FakeVehicleRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -27,7 +27,7 @@ class TripApplicationServiceTest {
 
     private TripApplicationService tripApplicationService;
     private FakeVehicleRepository vehicleRepository;
-    private FakeTripRepository tripRepository;
+    private FakeJourneyRepository journeyRepository;
     private FakeLocationSnapshotRepository snapshotRepository;
 
     private static final Location ORIGIN = Location.of(37.5012, 127.0396);
@@ -37,11 +37,11 @@ class TripApplicationServiceTest {
     @BeforeEach
     void setUp() {
         vehicleRepository = new FakeVehicleRepository();
-        tripRepository = new FakeTripRepository();
+        journeyRepository = new FakeJourneyRepository();
         snapshotRepository = new FakeLocationSnapshotRepository();
 
         tripApplicationService = new TripApplicationService(
-                tripRepository,
+                journeyRepository,
                 vehicleRepository,
                 snapshotRepository,
                 new FakeTimeGenerator(1000L)
@@ -67,18 +67,18 @@ class TripApplicationServiceTest {
     class ScheduleTrip {
 
         @Test
-        @DisplayName("배차 시 SCHEDULED 상태의 Trip이 생성된다")
+        @DisplayName("배차 시 SCHEDULED 상태의 Journey가 생성된다")
         void 배차_생성() {
             Vehicle vehicle = saveAvailableVehicle();
 
-            Trip trip = tripApplicationService.scheduleTrip(vehicle.getId(), ORIGIN, DESTINATION);
+            Journey journey = tripApplicationService.scheduleTrip(vehicle.getId(), ORIGIN, DESTINATION);
 
-            assertThat(trip.getId()).isNotNull();
-            assertThat(trip.getVehicleId()).isEqualTo(vehicle.getId());
-            assertThat(trip.getStatus()).isEqualTo(TripStatusEnum.SCHEDULED);
-            assertThat(trip.getOrigin()).isEqualTo(ORIGIN);
-            assertThat(trip.getDestination()).isEqualTo(DESTINATION);
-            assertThat(trip.getStartedAt()).isNull();
+            assertThat(journey.getId()).isNotNull();
+            assertThat(journey.getTarget().getTargetId()).isEqualTo(vehicle.getId());
+            assertThat(journey.getStatus()).isEqualTo(JourneyStatusEnum.SCHEDULED);
+            assertThat(journey.getOrigin()).isEqualTo(ORIGIN);
+            assertThat(journey.getDestination()).isEqualTo(DESTINATION);
+            assertThat(journey.getStartedAt()).isNull();
         }
 
         @Test
@@ -108,14 +108,14 @@ class TripApplicationServiceTest {
     class DepartTrip {
 
         @Test
-        @DisplayName("출발 시 Trip이 IN_PROGRESS가 되고 Vehicle이 ON_TRIP으로 전이된다")
+        @DisplayName("출발 시 Journey가 IN_PROGRESS가 되고 Vehicle이 ON_TRIP으로 전이된다")
         void 출발() {
             Vehicle vehicle = saveAvailableVehicle();
             tripApplicationService.scheduleTrip(vehicle.getId(), ORIGIN, DESTINATION);
 
-            Trip departed = tripApplicationService.departTrip(vehicle.getId());
+            Journey departed = tripApplicationService.departTrip(vehicle.getId());
 
-            assertThat(departed.getStatus()).isEqualTo(TripStatusEnum.IN_PROGRESS);
+            assertThat(departed.getStatus()).isEqualTo(JourneyStatusEnum.IN_PROGRESS);
             assertThat(departed.getStartedAt()).isNotNull();
 
             Vehicle updated = vehicleRepository.findById(vehicle.getId());
@@ -150,7 +150,6 @@ class TripApplicationServiceTest {
             LocationSnapshot snapshot = tripApplicationService.recordSnapshot(vehicle.getId(), current);
 
             assertThat(snapshot.getId()).isNotNull();
-            assertThat(snapshot.getVehicleId()).isEqualTo(vehicle.getId());
             assertThat(snapshot.getLocation()).isEqualTo(current);
         }
 
@@ -172,15 +171,15 @@ class TripApplicationServiceTest {
     class CompleteTrip {
 
         @Test
-        @DisplayName("운행 완료 시 Trip이 COMPLETED되고 Vehicle이 AVAILABLE로 전이된다")
+        @DisplayName("운행 완료 시 Journey가 COMPLETED되고 Vehicle이 AVAILABLE로 전이된다")
         void 운행_완료() {
             Vehicle vehicle = saveAvailableVehicle();
             tripApplicationService.scheduleTrip(vehicle.getId(), ORIGIN, DESTINATION);
             tripApplicationService.departTrip(vehicle.getId());
 
-            Trip completed = tripApplicationService.completeTrip(vehicle.getId());
+            Journey completed = tripApplicationService.completeTrip(vehicle.getId());
 
-            assertThat(completed.getStatus()).isEqualTo(TripStatusEnum.COMPLETED);
+            assertThat(completed.getStatus()).isEqualTo(JourneyStatusEnum.COMPLETED);
             assertThat(completed.getArrivedAt()).isNotNull();
 
             Vehicle updated = vehicleRepository.findById(vehicle.getId());
@@ -207,14 +206,14 @@ class TripApplicationServiceTest {
         @DisplayName("운행 경로를 조회할 수 있다")
         void 경로_조회() {
             Vehicle vehicle = saveAvailableVehicle();
-            Trip trip = tripApplicationService.scheduleTrip(vehicle.getId(), ORIGIN, DESTINATION);
+            Journey journey = tripApplicationService.scheduleTrip(vehicle.getId(), ORIGIN, DESTINATION);
             tripApplicationService.departTrip(vehicle.getId());
 
             tripApplicationService.recordSnapshot(vehicle.getId(), Location.of(37.51, 127.03));
             tripApplicationService.recordSnapshot(vehicle.getId(), Location.of(37.52, 127.02));
             tripApplicationService.recordSnapshot(vehicle.getId(), Location.of(37.53, 127.01));
 
-            List<LocationSnapshot> route = tripApplicationService.getTripRoute(trip.getId());
+            List<LocationSnapshot> route = tripApplicationService.getTripRoute(journey.getId());
 
             assertThat(route).hasSize(3);
             assertThat(route.get(0).getLocation()).isEqualTo(Location.of(37.51, 127.03));
@@ -234,14 +233,14 @@ class TripApplicationServiceTest {
             Vehicle vehicle = saveAvailableVehicle();
 
             // 배차
-            Trip scheduled = tripApplicationService.scheduleTrip(vehicle.getId(), ORIGIN, DESTINATION);
-            assertThat(scheduled.getStatus()).isEqualTo(TripStatusEnum.SCHEDULED);
+            Journey scheduled = tripApplicationService.scheduleTrip(vehicle.getId(), ORIGIN, DESTINATION);
+            assertThat(scheduled.getStatus()).isEqualTo(JourneyStatusEnum.SCHEDULED);
             assertThat(vehicleRepository.findById(vehicle.getId()).getStatus())
                     .isEqualTo(VehicleStatusEnum.AVAILABLE);
 
             // 출발
-            Trip departed = tripApplicationService.departTrip(vehicle.getId());
-            assertThat(departed.getStatus()).isEqualTo(TripStatusEnum.IN_PROGRESS);
+            Journey departed = tripApplicationService.departTrip(vehicle.getId());
+            assertThat(departed.getStatus()).isEqualTo(JourneyStatusEnum.IN_PROGRESS);
             assertThat(vehicleRepository.findById(vehicle.getId()).getStatus())
                     .isEqualTo(VehicleStatusEnum.ON_TRIP);
 
@@ -249,8 +248,8 @@ class TripApplicationServiceTest {
             tripApplicationService.recordSnapshot(vehicle.getId(), Location.of(37.52, 127.02));
 
             // 완료
-            Trip completed = tripApplicationService.completeTrip(vehicle.getId());
-            assertThat(completed.getStatus()).isEqualTo(TripStatusEnum.COMPLETED);
+            Journey completed = tripApplicationService.completeTrip(vehicle.getId());
+            assertThat(completed.getStatus()).isEqualTo(JourneyStatusEnum.COMPLETED);
             assertThat(vehicleRepository.findById(vehicle.getId()).getStatus())
                     .isEqualTo(VehicleStatusEnum.AVAILABLE);
         }

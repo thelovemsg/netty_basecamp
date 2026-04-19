@@ -1,22 +1,23 @@
-package org.example.netty_basecamp.fake.repository;
+package org.example.netty_basecamp.cartracking.tracking.infrastructure.inmemory;
 
 import org.example.netty_basecamp.cartracking.tracking.domain.LocationSnapshot;
 import org.example.netty_basecamp.cartracking.tracking.domain.repository.LocationSnapshotRepository;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
-public class FakeLocationSnapshotRepository implements LocationSnapshotRepository {
+public class InMemoryLocationSnapshotRepository implements LocationSnapshotRepository {
 
-    private final Map<Long, LocationSnapshot> store = new HashMap<>();
-    private long sequence = 1;
+    private final Map<Long, LocationSnapshot> store = new ConcurrentHashMap<>();
+    private final AtomicLong sequence = new AtomicLong(1);
 
     @Override
     public LocationSnapshot save(LocationSnapshot snapshot) {
         if (snapshot.getId() == null) {
-            Long newId = sequence++;
+            Long newId = sequence.getAndIncrement();
             LocationSnapshot withId = LocationSnapshot.builder()
                     .id(newId)
                     .journeyId(snapshot.getJourneyId())

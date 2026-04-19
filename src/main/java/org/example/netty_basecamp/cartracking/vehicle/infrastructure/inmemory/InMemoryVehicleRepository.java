@@ -1,17 +1,18 @@
-package org.example.netty_basecamp.fake.repository;
+package org.example.netty_basecamp.cartracking.vehicle.infrastructure.inmemory;
 
 import org.example.netty_basecamp.cartracking.vehicle.domain.Vehicle;
 import org.example.netty_basecamp.cartracking.vehicle.domain.repository.VehicleRepository;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
-public class FakeVehicleRepository implements VehicleRepository {
+public class InMemoryVehicleRepository implements VehicleRepository {
 
-    private final Map<Long, Vehicle> store = new HashMap<>();
-    private long sequence = 1;
+    private final Map<Long, Vehicle> store = new ConcurrentHashMap<>();
+    private final AtomicLong sequence = new AtomicLong(1);
 
     @Override
     public Vehicle findById(Long id) {
@@ -26,7 +27,7 @@ public class FakeVehicleRepository implements VehicleRepository {
     @Override
     public Vehicle save(Vehicle vehicle) {
         if (vehicle.getId() == null) {
-            Long newId = sequence++;
+            Long newId = sequence.getAndIncrement();
             Vehicle withId = Vehicle.builder()
                     .id(newId)
                     .plateNumber(vehicle.getPlateNumber())

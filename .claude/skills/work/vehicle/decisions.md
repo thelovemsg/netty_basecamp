@@ -16,6 +16,7 @@
 6. [ADR-V006: 지도 라이브러리 — Leaflet.js + OpenStreetMap 선택](#adr-v006)
 7. [ADR-V007: Location VO 좌표를 BigDecimal(scale=6)로 저장](#adr-v007)
 8. [ADR-V008: 위치 데이터 저장소 — 시계열 DB 대신 RDB 사용](#adr-v008)
+9. [ADR-V009: 위치 추적을 별도 Bounded Context(tracking)로 분리](#adr-v009)
 
 ---
 
@@ -187,3 +188,36 @@ Leaflet.js + OpenStreetMap 사용.
 - 프로젝트 목적이 Netty + DDD 검증 — 시계열 DB까지 도입하면 학습 범위가 과도하게 넓어짐
 - RDB 파티셔닝으로 충분히 대응 가능 (날짜 기반 range partition)
 - 시계열 DB 전환이 필요해지는 시점은 현재 범위가 아님
+
+---
+
+## ADR-V009: 위치 추적을 별도 Bounded Context(tracking)로 분리 {#adr-v009}
+**날짜**: 2026-04-19
+
+### 문제
+- Trip, LocationSnapshot, Location이 `vehicle/` BC 안에 있었음
+- 위치 추적은 차량에만 한정되지 않음 — 킥보드, 드론, 배달원 등 다양한 대상에 적용 가능
+- `vehicleId`가 도메인 모델 전체에 하드코딩되어 확장 시 대규모 수정 필요
+
+### 결정
+위치 추적 관련 도메인을 `domains/tracking/` BC로 분리한다.
+
+### 구조 변경
+| Before (vehicle/) | After (tracking/) |
+|---|---|
+| `Trip` | `Journey` |
+| `LocationSnapshot` | `LocationSnapshot` |
+| `Location` (VO) | `Location` (VO) |
+| `TripStatusEnum` | `JourneyStatusEnum` |
+| `vehicleId` (Long) | `TrackingTarget` (VO: targetId + targetType) |
+| `TripRepository` | `JourneyRepository` |
+
+- `Vehicle`은 `vehicle/` BC에 유지
+- `TripApplicationService`는 `vehicle/`에서 두 BC를 오케스트레이션
+- 의존 방향: `vehicle/ → tracking/` (단방향)
+
+### 판단 근거
+- **확장성**: 새로운 추적 대상 추가 시 `TrackingTargetTypeEnum`에 값만 추가하면 됨
+- **관심사 분리**: "차량 상태 관리"와 "위치 추적"은 독립적인 도메인
+- **LocationSnapshot 단순화**: `vehicleId` 제거 — `journeyId`만으로 Journey를 통해 추적 대상 식별
+- Vehicle 인터페이스 추상화(킥보드/오토바이 등)는 실제 요구사항 발생 시 결정 (YAGNI)
