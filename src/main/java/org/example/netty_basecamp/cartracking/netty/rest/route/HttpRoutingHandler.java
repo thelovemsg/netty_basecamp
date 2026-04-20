@@ -36,10 +36,22 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
         String path = extractPath(request.uri());
         String method = request.method().name();
+        String body = request.content().toString(CharsetUtil.UTF_8);
+
+        logger.info("→ {} {} {}", method, path, body.isEmpty() ? "" : body);
+
+        // CORS preflight 처리
+        if ("OPTIONS".equals(method)) {
+            FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, OK);
+            setCorsHeaders(response);
+            response.headers().set(CONTENT_LENGTH, 0);
+            ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+            return;
+        }
 
         RouteMatch match = registry.find(method, path);
         if (match == null) {
-            sendJson(ctx, NOT_FOUND, Map.of("error", "Not Found"));
+            sendJson(ctx, NOT_FOUND, Map.of("error", "Not Found"), method, path);
             return;
         }
 
@@ -49,19 +61,19 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
                 .pathVariables(match.getPathVariables())
                 .queryParams(extractQueryParams(request.uri()))
                 .headers(extractHeaders(request.headers()))
-                .body(request.content().toString(CharsetUtil.UTF_8))
+                .body(body)
                 .build();
 
         virtualExecutor.submit(() -> {
             try {
                 Object result = match.getEntry().handle(requestContext);
-                sendJson(ctx, OK, result);
+                sendJson(ctx, OK, result, method, path);
             } catch (IllegalArgumentException e) {
-                sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()));
+                sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()), method, path);
             } catch (IllegalStateException e) {
-                sendJson(ctx, CONFLICT, Map.of("error", e.getMessage()));
+                sendJson(ctx, CONFLICT, Map.of("error", e.getMessage()), method, path);
             } catch (Exception e) {
-                sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", e.getMessage()));
+                sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", e.getMessage()), method, path);
             }
         });
     }
@@ -87,19 +99,31 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         logger.error("Unhandled exception in pipeline", cause);
-        sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", "Internal Server Error"));
+        sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", "Internal Server Error"), "?", "?");
     }
 
-    private void sendJson(ChannelHandlerContext ctx, HttpResponseStatus status, Object body) {
+    private void sendJson(ChannelHandlerContext ctx, HttpResponseStatus status, Object body,
+                          String method, String path) {
         try {
             String json = objectMapper.writeValueAsString(body);
+            logger.info("← {} {} {} {}", method, path, status.code(), json);
             ByteBuf content = Unpooled.copiedBuffer(json, CharsetUtil.UTF_8);
             FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status, content);
             response.headers().set(CONTENT_TYPE, "application/json");
             response.headers().set(CONTENT_LENGTH, content.readableBytes());
-            ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+            setCorsHeaders(response);
+            ctx.channel().eventLoop().execute(() ->
+                    ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE)
+            );
         } catch (Exception e) {
-            ctx.close();
+            logger.error("← {} {} 직렬화 실패", method, path, e);
+            ctx.channel().eventLoop().execute(ctx::close);
         }
+    }
+
+    private void setCorsHeaders(FullHttpResponse response) {
+        response.headers().set("Access-Control-Allow-Origin", "*");
+        response.headers().set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+        response.headers().set("Access-Control-Allow-Headers", "Content-Type, Authorization");
     }
 }

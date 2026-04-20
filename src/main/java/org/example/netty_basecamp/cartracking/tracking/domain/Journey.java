@@ -83,7 +83,7 @@ public class Journey {
                 .build();
     }
 
-    public long getElapsed(long currentTime) {
+    public long calculateElapsed(long currentTime) {
         if (this.status == JourneyStatusEnum.SCHEDULED) {
             throw new IllegalStateException("출발 전인 운행은 경과시간을 계산할 수 없습니다.");
         }
@@ -96,7 +96,7 @@ public class Journey {
         return currentTime - this.startedAt;
     }
 
-    public long getDuration() {
+    public long calculateDuration() {
         if (this.status != JourneyStatusEnum.COMPLETED) {
             throw new IllegalStateException("완료된 운행만 소요시간을 계산할 수 있습니다.");
         }

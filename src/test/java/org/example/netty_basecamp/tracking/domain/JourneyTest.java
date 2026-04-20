@@ -175,7 +175,7 @@ class JourneyTest {
             Journey completed = departed.arrive(2000L);
 
             assertThat(completed.getStatus()).isEqualTo(JourneyStatusEnum.COMPLETED);
-            assertThat(completed.getDuration()).isEqualTo(0L);
+            assertThat(completed.calculateDuration()).isEqualTo(0L);
         }
 
         @Test
@@ -243,10 +243,10 @@ class JourneyTest {
         }
     }
 
-    // ========== getDuration ==========
+    // ========== calculateDuration ==========
 
     @Nested
-    @DisplayName("getDuration — 소요시간 계산")
+    @DisplayName("calculateDuration — 소요시간 계산")
     class GetDuration {
 
         @Test
@@ -255,7 +255,7 @@ class JourneyTest {
             Journey completed = Journey.create(TARGET, ORIGIN, DESTINATION, 1000L)
                     .depart(2000L).arrive(6000L);
 
-            assertThat(completed.getDuration()).isEqualTo(4000L);
+            assertThat(completed.calculateDuration()).isEqualTo(4000L);
         }
 
         @Test
@@ -264,7 +264,7 @@ class JourneyTest {
             Journey completed = Journey.create(TARGET, ORIGIN, DESTINATION, 1000L)
                     .depart(2000L).arrive(2000L);
 
-            assertThat(completed.getDuration()).isEqualTo(0L);
+            assertThat(completed.calculateDuration()).isEqualTo(0L);
         }
 
         @Test
@@ -274,7 +274,7 @@ class JourneyTest {
             Journey completed = Journey.create(TARGET, ORIGIN, DESTINATION, 1000L)
                     .depart(2000L).arrive(2000L + oneHourMs);
 
-            assertThat(completed.getDuration()).isEqualTo(oneHourMs);
+            assertThat(completed.calculateDuration()).isEqualTo(oneHourMs);
         }
 
         @Test
@@ -282,7 +282,7 @@ class JourneyTest {
         void SCHEDULED_소요시간_예외() {
             Journey journey = Journey.create(TARGET, ORIGIN, DESTINATION, 1000L);
 
-            assertThatThrownBy(journey::getDuration)
+            assertThatThrownBy(journey::calculateDuration)
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessage("완료된 운행만 소요시간을 계산할 수 있습니다.");
         }
@@ -292,16 +292,16 @@ class JourneyTest {
         void 진행중_소요시간_예외() {
             Journey journey = Journey.create(TARGET, ORIGIN, DESTINATION, 1000L).depart(2000L);
 
-            assertThatThrownBy(journey::getDuration)
+            assertThatThrownBy(journey::calculateDuration)
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessage("완료된 운행만 소요시간을 계산할 수 있습니다.");
         }
     }
 
-    // ========== getElapsed ==========
+    // ========== calculateElapsed ==========
 
     @Nested
-    @DisplayName("getElapsed — 경과시간 계산")
+    @DisplayName("calculateElapsed — 경과시간 계산")
     class GetElapsed {
 
         @Test
@@ -309,17 +309,17 @@ class JourneyTest {
         void 운행중_경과시간() {
             Journey departed = Journey.create(TARGET, ORIGIN, DESTINATION, 1000L).depart(2000L);
 
-            assertThat(departed.getElapsed(5000L)).isEqualTo(3000L);
+            assertThat(departed.calculateElapsed(5000L)).isEqualTo(3000L);
         }
 
         @Test
-        @DisplayName("완료된 운행의 경과시간은 getDuration과 동일하다")
+        @DisplayName("완료된 운행의 경과시간은 calculateDuration과 동일하다")
         void 완료_경과시간() {
             Journey completed = Journey.create(TARGET, ORIGIN, DESTINATION, 1000L)
                     .depart(2000L).arrive(6000L);
 
-            assertThat(completed.getElapsed(9999L)).isEqualTo(4000L);
-            assertThat(completed.getElapsed(9999L)).isEqualTo(completed.getDuration());
+            assertThat(completed.calculateElapsed(9999L)).isEqualTo(4000L);
+            assertThat(completed.calculateElapsed(9999L)).isEqualTo(completed.calculateDuration());
         }
 
         @Test
@@ -327,7 +327,7 @@ class JourneyTest {
         void 출발_직후_경과시간_0() {
             Journey departed = Journey.create(TARGET, ORIGIN, DESTINATION, 1000L).depart(2000L);
 
-            assertThat(departed.getElapsed(2000L)).isEqualTo(0L);
+            assertThat(departed.calculateElapsed(2000L)).isEqualTo(0L);
         }
 
         @Test
@@ -335,7 +335,7 @@ class JourneyTest {
         void SCHEDULED_경과시간_예외() {
             Journey scheduled = Journey.create(TARGET, ORIGIN, DESTINATION, 1000L);
 
-            assertThatThrownBy(() -> scheduled.getElapsed(5000L))
+            assertThatThrownBy(() -> scheduled.calculateElapsed(5000L))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessage("출발 전인 운행은 경과시간을 계산할 수 없습니다.");
         }
@@ -345,7 +345,7 @@ class JourneyTest {
         void 조회시각_출발이전_예외() {
             Journey departed = Journey.create(TARGET, ORIGIN, DESTINATION, 1000L).depart(5000L);
 
-            assertThatThrownBy(() -> departed.getElapsed(3000L))
+            assertThatThrownBy(() -> departed.calculateElapsed(3000L))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessage("조회 시각은 출발 시각 이후여야 합니다.");
         }
@@ -368,7 +368,7 @@ class JourneyTest {
 
             Journey completed = departed.arrive(5000L);
             assertThat(completed.getStatus()).isEqualTo(JourneyStatusEnum.COMPLETED);
-            assertThat(completed.getDuration()).isEqualTo(3000L);
+            assertThat(completed.calculateDuration()).isEqualTo(3000L);
         }
     }
 

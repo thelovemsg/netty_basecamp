@@ -21,6 +21,10 @@
 10. [ADR-V010: cartracking 전용 독립 Netty 서버 구성](#adr-v010)
 11. [ADR-V011: VirtualExecutor를 서버 생명주기에서 생성·주입·종료](#adr-v011)
 12. [ADR-V012: HttpRoutingHandler에 exceptionCaught 추가 — 파이프라인 예외 처리](#adr-v012)
+13. [ADR-V013: 대시보드를 정적 HTML로 제공 — CORS 허용 방식](#adr-v013)
+14. [ADR-V014: Virtual Thread에서 응답 시 EventLoop으로 스케줄링](#adr-v014)
+15. [ADR-V015: Journey 계산 메서드 이름에서 get 접두어 제거 — Jackson 직렬화 충돌 방지](#adr-v015)
+16. [ADR-V016: HttpRoutingHandler 요청/응답 로깅 추가](#adr-v016)
 
 ---
 
@@ -362,6 +366,196 @@ public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
 ### 판단 근거
 - 파이프라인 예외가 처리되지 않으면 클라이언트는 응답 없이 연결이 끊기는 경험을 함
 - `exceptionCaught()`에서 채널을 강제로 닫지 않고 JSON 응답 후 `ChannelFutureListener.CLOSE`로 정상 종료
+
+### 관련 파일
+- `cartracking/netty/rest/route/HttpRoutingHandler.java`
+
+---
+
+## ADR-V013: 대시보드를 정적 HTML로 제공 — CORS 허용 방식 {#adr-v013}
+**날짜**: 2026-04-20
+
+### 문제
+- 차량 관제 대시보드 UI가 필요한데, Thymeleaf(서버사이드 렌더링)를 도입할지, 정적 HTML을 사용할지 결정 필요
+- Thymeleaf는 Spring 없이 standalone으로 사용 가능하지만 의존성과 설정 복잡도가 추가됨
+
+### 검토한 대안
+| 방식 | 장점 | 단점 |
+|------|------|------|
+| Thymeleaf standalone | 서버에서 HTML 렌더링, CORS 불필요 | 의존성 추가, 템플릿 엔진 설정 필요 |
+| Netty 정적 파일 서빙 | CORS 불필요, 한 서버로 통합 | StaticFileHandler 구현 필요 |
+| 정적 HTML + file:// (채택) | 의존성 없음, 가장 단순 | CORS 설정 필요 |
+
+### 결정
+브라우저에서 HTML 파일을 직접 열어(`file://`) API를 호출하는 방식을 사용한다. `HttpRoutingHandler`에 CORS 헤더를 추가하여 cross-origin 요청을 허용한다.
+
+### 구현
+```java
+// OPTIONS preflight 즉시 응답
+if ("OPTIONS".equals(method)) {
+    FullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, OK);
+    setCorsHeaders(response);
+    response.headers().set(CONTENT_LENGTH, 0);
+    ctx.writeAndFlush(response).addListener(CLOSE);
+    return;
+}
+
+// 모든 JSON 응답에 CORS 헤더 추가
+private void setCorsHeaders(FullHttpResponse response) {
+    response.headers().set("Access-Control-Allow-Origin", "*");
+    response.headers().set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    response.headers().set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+```
+
+### 판단 근거
+- **데모/학습 목적** — 프로덕션 수준의 보안(특정 origin 제한)은 현재 불필요
+- **최소 복잡도** — Netty에 정적 파일 핸들러를 추가하거나 Thymeleaf 의존성을 도입하는 것보다 CORS 헤더 3줄이 훨씬 단순
+- **즉시 시작 가능** — HTML 파일을 더블클릭하면 바로 대시보드 동작
+- 실서비스 전환 시 `*` 대신 특정 origin으로 제한하거나 Netty 정적 파일 서빙으로 전환하면 됨
+
+### 관련 파일
+- `cartracking/netty/rest/route/HttpRoutingHandler.java`
+
+---
+
+
+## ADR-V013: 대시보드를 정적 HTML로 제공 — CORS 허용 방식 {#adr-v013}
+**날짜**: 2026-04-20
+
+### 문제
+- 차량 관제 대시보드 UI가 필요한데, Thymeleaf(서버사이드 렌더링)를 도입할지, 정적 HTML을 사용할지 결정 필요
+- Thymeleaf는 Spring 없이 standalone으로 사용 가능하지만 의존성과 설정 복잡도가 추가됨
+
+### 검토한 대안
+| 방식 | 장점 | 단점 |
+|------|------|------|
+| Thymeleaf standalone | 서버에서 HTML 렌더링, CORS 불필요 | 의존성 추가, 템플릿 엔진 설정 필요 |
+| Netty 정적 파일 서빙 | CORS 불필요, 한 서버로 통합 | StaticFileHandler 구현 필요 |
+| 정적 HTML + file:// (채택) | 의존성 없음, 가장 단순 | CORS 설정 필요 |
+
+### 결정
+브라우저에서 HTML 파일을 직접 열어(`file://`) API를 호출하는 방식을 사용한다. `HttpRoutingHandler`에 CORS 헤더를 추가하여 cross-origin 요청을 허용한다.
+
+### 구현
+```java
+// OPTIONS preflight 즉시 응답
+if ("OPTIONS".equals(method)) {
+    FullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, OK);
+    setCorsHeaders(response);
+    response.headers().set(CONTENT_LENGTH, 0);
+    ctx.writeAndFlush(response).addListener(CLOSE);
+    return;
+}
+
+// 모든 JSON 응답에 CORS 헤더 추가
+private void setCorsHeaders(FullHttpResponse response) {
+    response.headers().set("Access-Control-Allow-Origin", "*");
+    response.headers().set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    response.headers().set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+```
+
+### 판단 근거
+- **데모/학습 목적** — 프로덕션 수준의 보안(특정 origin 제한)은 현재 불필요
+- **최소 복잡도** — Netty에 정적 파일 핸들러를 추가하거나 Thymeleaf 의존성을 도입하는 것보다 CORS 헤더 3줄이 훨씬 단순
+- **즉시 시작 가능** — HTML 파일을 더블클릭하면 바로 대시보드 동작
+- 실서비스 전환 시 `*` 대신 특정 origin으로 제한하거나 Netty 정적 파일 서빙으로 전환하면 됨
+
+### 관련 파일
+- `cartracking/netty/rest/route/HttpRoutingHandler.java`
+
+---
+
+## ADR-V014: Virtual Thread에서 응답 시 EventLoop으로 스케줄링 {#adr-v014}
+**날짜**: 2026-04-20
+
+### 문제
+`virtualExecutor.submit()` 내부에서 `ctx.writeAndFlush()`를 직접 호출하면, 브라우저에 응답이 전달되지 않는 현상 발생. POST 요청이 빨간색으로 표시되고 response body가 없음.
+
+### 원인 분석
+- Netty의 `Channel` I/O 연산은 EventLoop 스레드에서 실행되어야 thread-safety가 보장됨
+- Virtual Thread에서 직접 `writeAndFlush()`를 호출하면 EventLoop의 내부 상태와 충돌하여 응답이 유실될 수 있음
+- `catch (Exception e) { ctx.close(); }` 에서 로그 없이 연결만 닫아 디버깅도 불가능했음
+
+### 결정
+`sendJson()`에서 `ctx.channel().eventLoop().execute()`로 감싸서 응답을 EventLoop에서 실행한다.
+
+```java
+ctx.channel().eventLoop().execute(() ->
+    ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE)
+);
+```
+
+### 판단 근거
+- Netty 공식 권장: I/O 연산은 EventLoop에서 수행
+- Virtual Thread는 도메인 로직(블로킹 작업) 전용, 응답 쓰기는 EventLoop으로 돌려보냄
+- 직렬화 실패 시에도 로그를 남겨 디버깅 가능하도록 개선
+
+### 관련 파일
+- `cartracking/netty/rest/route/HttpRoutingHandler.java`
+
+---
+
+## ADR-V015: Journey 계산 메서드 이름에서 get 접두어 제거 — Jackson 직렬화 충돌 방지 {#adr-v015}
+**날짜**: 2026-04-20
+
+### 문제
+Jackson이 `Journey` 객체를 직렬화할 때 `getDuration()` 메서드를 `"duration"` 프로퍼티로 인식하여 호출. 운행이 완료되지 않은 상태에서 호출되면 `IllegalStateException`이 발생하여 직렬화 전체가 실패.
+
+```
+com.fasterxml.jackson.databind.JsonMappingException:
+  완료된 운행만 소요시간을 계산할 수 있습니다.
+  (through reference chain: ...Journey["duration"])
+```
+
+### 검토한 대안
+| 방식 | 장점 | 단점 |
+|------|------|------|
+| `@JsonIgnore` 어노테이션 | 명시적 | 도메인에 프레임워크 import 금지 (절대 규칙 위반) |
+| Jackson Mixin (netty 레이어) | 도메인 오염 없음 | 설정 코드 증가 |
+| 응답 DTO 분리 | 가장 정석 | 파일 수 증가, 현재 규모에 과잉 |
+| 메서드명에서 `get` 제거 (채택) | 변경 최소, 도메인 오염 없음 | 네이밍 컨벤션 변경 |
+
+### 결정
+`getDuration()` → `calculateDuration()`, `getElapsed()` → `calculateElapsed()`로 이름 변경.
+
+### 판단 근거
+- `get` 접두어가 없으면 Jackson이 JavaBean 프로퍼티로 인식하지 않음
+- 이 메서드들은 실제로 "프로퍼티 접근"이 아닌 "계산 행위"이므로 `calculate` 접두어가 의미적으로도 정확
+- 도메인 레이어에 프레임워크 의존성을 추가하지 않고 해결
+- 향후 규모가 커지면 응답 DTO 분리를 재검토
+
+### 관련 파일
+- `cartracking/tracking/domain/Journey.java`
+- `tracking/domain/JourneyTest.java`
+
+---
+
+## ADR-V016: HttpRoutingHandler 요청/응답 로깅 추가 {#adr-v016}
+**날짜**: 2026-04-20
+
+### 문제
+- API 호출 시 요청/응답 내용을 확인할 수 없어 디버깅이 어려움
+- ADR-V014, V015 이슈 발견 시 서버 로그가 없어 원인 파악에 시간 소요
+
+### 결정
+`HttpRoutingHandler`에 요청 수신 시점과 응답 송신 시점에 Log4j2 로깅을 추가한다.
+
+### 로그 포맷
+```
+→ POST /api/cartracking/trips {"vehicleId":1,"originLat":37.56,...}
+← POST /api/cartracking/trips 200 {"id":1,"target":{...}}
+← POST /api/cartracking/trips 직렬화 실패 (Exception 로그)
+```
+
+- `→`: 요청 수신 (method, path, body)
+- `←`: 응답 송신 (method, path, status code, response body)
+
+### 판단 근거
+- 데모/학습 목적으로 전체 요청·응답 body를 로깅해도 성능 문제 없음
+- 프로덕션에서는 body 로깅을 제거하거나 DEBUG 레벨로 낮춰야 함
+- Log4j2 비동기 로깅(Disruptor)을 사용하므로 EventLoop 스레드 블로킹 최소화
 
 ### 관련 파일
 - `cartracking/netty/rest/route/HttpRoutingHandler.java`
