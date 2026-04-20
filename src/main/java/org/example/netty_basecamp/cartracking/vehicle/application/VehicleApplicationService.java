@@ -1,6 +1,6 @@
 package org.example.netty_basecamp.cartracking.vehicle.application;
 
-import org.example.netty_basecamp.domains.common.service.TimeGenerator;
+import org.example.netty_basecamp.basic.common.service.TimeGenerator;
 import org.example.netty_basecamp.cartracking.vehicle.domain.Vehicle;
 import org.example.netty_basecamp.cartracking.vehicle.domain.dto.VehicleCreate;
 import org.example.netty_basecamp.cartracking.vehicle.domain.repository.VehicleRepository;

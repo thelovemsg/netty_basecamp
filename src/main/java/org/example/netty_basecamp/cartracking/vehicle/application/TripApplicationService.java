@@ -1,6 +1,6 @@
 package org.example.netty_basecamp.cartracking.vehicle.application;
 
-import org.example.netty_basecamp.domains.common.service.TimeGenerator;
+import org.example.netty_basecamp.basic.common.service.TimeGenerator;
 import org.example.netty_basecamp.cartracking.tracking.domain.Journey;
 import org.example.netty_basecamp.cartracking.tracking.domain.LocationSnapshot;
 import org.example.netty_basecamp.cartracking.tracking.domain.enums.TrackingTargetTypeEnum;
