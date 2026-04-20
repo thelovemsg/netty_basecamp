@@ -4,7 +4,80 @@
 
 ---
 
-## MQTT 개념 정리
+## 오늘 한 일 요약 (2026-04-20)
+
+### 한 마디로
+**가짜 차량이 5초마다 GPS 좌표를 만들어서 Mosquitto 브로커에 보내는 시뮬레이터를 만들었다.**
+
+### 구체적으로 만든 것
+
+```
+docker-compose.yml       ← Mosquitto 브로커를 Docker로 띄우는 설정
+mosquitto/mosquitto.conf ← 브로커 동작 설정 (포트, 인증)
+build.gradle             ← HiveMQ 클라이언트 라이브러리 추가
+
+mqtt/
+├── TelemetryPayload.java    ← 보낼 데이터 구조 (vehicleId, lat, lng, speed, status, timestamp)
+├── MqttClientFactory.java   ← 브로커에 연결할 클라이언트 객체를 만드는 공장
+└── TelemetryPublisher.java  ← 실제로 브로커에 JSON 메시지를 보내는 역할
+
+simulator/
+├── SeoulRouteGenerator.java ← 서울 안에서 랜덤 출발지/도착지를 뽑아주는 것
+├── GpsInterpolator.java     ← 출발지~도착지 사이를 여러 좌표로 쪼개주는 것 (보간)
+├── VehicleSimulator.java    ← 차량 1대의 움직임 루프 (5초마다 다음 좌표로 이동 → publish)
+└── SimulatorBootstrap.java  ← 등록된 모든 차량에 대해 시뮬레이터를 일괄 시작/종료
+
+rest/
+├── SimulatorController.java  ← start/stop/status REST API
+└── SimulatorRouteConfig.java ← 라우트 등록
+```
+
+### 동작 흐름
+
+```
+1. docker compose up -d              → Mosquitto 브로커 시작 (port 1883)
+2. CarTrackingApplication 실행        → Netty 서버 시작 (port 8081) + 브로커에 MQTT 연결
+3. POST /api/cartracking/vehicles    → 차량 등록
+4. POST /api/cartracking/simulator/start → 시뮬레이터 시작
+5. 로그에 5초마다 출력:
+   MQTT publish [topic=vehicle/1/telemetry] [payload={"vehicleId":1,"latitude":37.54,"longitude":127.03,"speed":42.5,"status":"ON_TRIP","timestamp":...}]
+6. POST /api/cartracking/simulator/stop  → 시뮬레이터 종료
+```
+
+### MQTT Client란?
+
+MQTT Client = **브로커에 접속해서 메시지를 보내거나 받을 수 있는 프로그램(또는 라이브러리)**
+
+우리 프로젝트에서:
+- HiveMQ Client 라이브러리 = Java에서 MQTT 통신을 할 수 있게 해주는 도구
+- `MqttClientFactory.create("이름")` → 클라이언트 객체 생성 (아직 연결 안 됨)
+- `client.connect()` → 브로커(localhost:1883)에 TCP 연결
+- `client.publishWith().topic("...").payload(json).send()` → 메시지 전송
+- `client.disconnect()` → 연결 끊기
+
+**HTTP로 비유하면:**
+| MQTT | HTTP 비유 |
+|------|-----------|
+| MqttClient | HttpClient |
+| connect() | TCP 연결 맺기 |
+| publish() | POST 요청 보내기 |
+| subscribe() | 웹훅 등록하기 (서버가 나한테 쏴줌) |
+| broker | 서버 |
+
+### 아직 안 한 것 (다음에 할 것)
+- Broker → 서버가 subscribe해서 메시지 수신
+- 서버 → 브라우저에 실시간 push (SSE or WebSocket)
+- 화면에서 차량이 움직이는 걸 눈으로 보기
+
+---
+
+## MQTT 용어 정리
+
+| 용어 | 정체 | 비유 |
+|------|------|------|
+| **MQTT** | 프로토콜 (규약) | "택배 규칙" — HTTP 같은 것 |
+| **Mosquitto** | 브로커 구현체 | "CJ대한통운" — 택배 회사 |
+| **HiveMQ Client** | 클라이언트 라이브러리 | "택배 보내는 앱" |
 
 ### Broker (Mosquitto)
 - **우체국** 역할. 직접 구현하지 않고 Docker로 띄우기만 하면 됨
@@ -13,7 +86,7 @@
 
 ### Client (HiveMQ Client)
 - 우리 코드에서 만드는 건 **이쪽만**
-- `MqttClientFactory`가 broker에 접속할 클라이언트 객체를 생성
+- `MqttClientFactory`가 broker에 접속할 클라이언트 객체를 생성 (host/port 설정을 한 곳에 모아두고 `create("이름")`만 호출하면 클라이언트가 나옴)
 - `TelemetryPublisher`가 그 클라이언트로 broker에 메시지를 publish(보냄)
 
 ### 화면까지 연결하는 전체 흐름 (Phase 2 + 이후 Phase)
@@ -47,6 +120,10 @@
 - Broker → 서버 subscribe (이후 Phase)
 - 서버 → 브라우저 실시간 push (이후 Phase)
 - MQTT Explorer에서 눈으로 메시지 수신 확인만 하고 끝
+
+**브로커 전략:**
+- 지금은 Mosquitto(기성품)를 Docker로 띄워서 사용
+- 나중에 Netty로 직접 구현한 브로커로 갈아끼울 예정 (career-transition-plan.md 5~7월 로드맵)
 
 ---
 
@@ -88,9 +165,58 @@ services:
 
 ### 3. mosquitto/mosquitto.conf (프로젝트 루트)
 
+mosquitto.conf는 **Mosquitto 브로커의 설정 파일**. Docker 컨테이너가 시작될 때 이 파일을 읽고 동작 방식을 결정한다.
+
 ```conf
 listener 1883
 allow_anonymous true
+```
+
+| 설정 | 의미 | 왜 이렇게? |
+|------|------|-----------|
+| `listener 1883` | TCP 1883 포트에서 연결 대기 | MQTT 기본 포트. 클라이언트가 이 포트로 접속 |
+| `allow_anonymous true` | 인증 없이 아무나 접속 가능 | 로컬 개발용이니까. 운영에서는 false + 비밀번호 설정 필요 |
+
+**Mosquitto 2.x부터 기본값이 `allow_anonymous false`**이므로, 이 설정 없으면 클라이언트 연결이 거부된다.
+
+#### 나중에 추가할 수 있는 설정 예시
+```conf
+listener 1883
+allow_anonymous false
+password_file /mosquitto/config/passwd    # 사용자/비밀번호 인증
+log_type all                              # 모든 로그 출력
+max_connections 10000                     # 최대 동시 접속 수
+persistence true                          # 메시지를 디스크에 저장 (브로커 재시작 후 복구)
+persistence_location /mosquitto/data/
+```
+
+---
+
+## MQTT Topic 설계
+
+### 현재 (Phase 2)
+```
+vehicle/{vehicleId}/telemetry    ← GPS, 속도, 상태 (5초마다)
+```
+
+### 향후 확장 시
+```
+vehicle/{vehicleId}/telemetry    ← GPS, 속도, 상태 (5초마다)
+vehicle/{vehicleId}/event        ← 시동 ON/OFF, 급정거, 사고 등 (발생 시)
+vehicle/{vehicleId}/command      ← 서버→차량 명령 (경로 변경, 정지 등)
+```
+
+| 토픽 | 빈도 | 방향 | QoS | 이유 |
+|------|------|------|-----|------|
+| `telemetry` | 5초마다 | 차량→서버 | 0 | 유실 OK, 다음 거 오면 됨 |
+| `event` | 가끔 | 차량→서버 | 1 | 사고 알림 등 유실하면 안 됨 |
+| `command` | 가끔 | 서버→차량 | 1 | 정지 명령은 반드시 도달해야 함 |
+
+### 와일드카드 구독
+```
+vehicle/+/telemetry    ← + : 한 레벨만 아무거나 (모든 차량의 telemetry)
+vehicle/1/#            ← # : 이하 전부 (차량 1의 모든 메시지)
+vehicle/#              ← 차량 관련 전체 구독
 ```
 
 ---
@@ -112,9 +238,29 @@ src/main/java/org/example/netty_basecamp/cartracking/
 
 ---
 
+## 클래스별 역할 요약 (Q&A 기반)
+
+### MqttClientFactory
+- broker에 연결할 클라이언트 객체를 만들어주는 공장
+- host/port 설정을 한 곳에 모아두고 `create("이름")`만 호출하면 클라이언트가 나옴
+- 반환된 client 객체로 `connect()`, `publishWith()`, `disconnect()` 사용
+
+### GpsInterpolator (보간기)
+- **두 점 사이를 쪼개서 중간 좌표들을 만들어주는 것**
+- 차량이 A→B로 순간이동하면 실시간 추적이 안 되니까, 중간중간 위치를 만들어야 함
+- `interpolate()`: ratio(0.0→1.0)로 출발지~도착지 사이를 균등 분할. steps=5면 출발지+도착지 포함 **6개** 좌표 반환
+- `calculateSteps()`: 두 점 사이 거리(km) 기반으로 steps 수를 자동 계산 (최소 3, 최대 30)
+- Location은 BigDecimal이지만 보간 계산은 double로 수행 — 가짜 GPS니까 소수점 오차 무의미, `Location.of(double, double)`이 다시 BigDecimal로 변환
+
+### 시뮬레이터가 필요한 이유
+- 실제 차량이 없으니까 **가짜로 움직이는 차량**을 만든 것
+- 나중에 진짜 차량에서 GPS 데이터가 오면 시뮬레이터는 필요 없어짐
+
+---
+
 ## 클래스별 상세 설계
 
-### RouteGenerator
+### SeoulRouteGenerator
 
 ```java
 package org.example.netty_basecamp.cartracking.simulator;
@@ -168,7 +314,7 @@ package org.example.netty_basecamp.cartracking.simulator;
  */
 public class VehicleSimulator implements Runnable {
     private final Long vehicleId;
-    private final RouteGenerator routeGenerator;
+    private final RouteGenerator seoulRouteGenerator;
     private final GpsInterpolator interpolator;
     private final TelemetryPublisher publisher;
     private final long intervalMillis;  // 기본 5000ms
@@ -178,7 +324,7 @@ public class VehicleSimulator implements Runnable {
     public void run() {
         while (running) {
             // 1. 랜덤 경로 생성
-            Location[] route = routeGenerator.randomRoute();
+            Location[] route = seoulRouteGenerator.randomRoute();
             int steps = interpolator.calculateSteps(route[0], route[1]);
             List<Location> waypoints = interpolator.interpolate(route[0], route[1], steps);
 
