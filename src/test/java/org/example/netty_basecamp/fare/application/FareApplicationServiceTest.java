@@ -1,10 +1,10 @@
 package org.example.netty_basecamp.fare.application;
 
-import org.example.netty_basecamp.domains.common.vo.Money;
-import org.example.netty_basecamp.domains.fare.application.FareApplicationService;
-import org.example.netty_basecamp.domains.fare.domain.Fare;
-import org.example.netty_basecamp.domains.fare.domain.FareCreate;
-import org.example.netty_basecamp.domains.fare.domain.FareStatusEnum;
+import org.example.netty_basecamp.basic.common.vo.Money;
+import org.example.netty_basecamp.basic.fare.application.FareApplicationService;
+import org.example.netty_basecamp.basic.fare.domain.Fare;
+import org.example.netty_basecamp.basic.fare.domain.FareCreate;
+import org.example.netty_basecamp.basic.fare.domain.FareStatusEnum;
 import org.example.netty_basecamp.fake.generator.FakeTimeGenerator;
 import org.example.netty_basecamp.fake.repository.FakeFareRepository;
 import org.junit.jupiter.api.BeforeEach;

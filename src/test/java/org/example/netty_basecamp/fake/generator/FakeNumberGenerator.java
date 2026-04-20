@@ -1,7 +1,7 @@
 package org.example.netty_basecamp.fake.generator;
 
-import org.example.netty_basecamp.domains.common.service.NumberGenerator;
-import org.example.netty_basecamp.domains.coupon.domain.Coupon;
+import org.example.netty_basecamp.basic.common.service.NumberGenerator;
+import org.example.netty_basecamp.basic.coupon.domain.Coupon;
 
 public class FakeNumberGenerator implements NumberGenerator {
 

@@ -1,15 +1,15 @@
 package org.example.netty_basecamp.coupon.domain.service;
 
-import org.example.netty_basecamp.domains.common.service.NumberGenerator;
-import org.example.netty_basecamp.domains.common.service.TimeGenerator;
-import org.example.netty_basecamp.domains.common.vo.Money;
-import org.example.netty_basecamp.domains.coupon.domain.Coupon;
-import org.example.netty_basecamp.domains.coupon.domain.CouponCreate;
-import org.example.netty_basecamp.domains.coupon.domain.IssuedCoupon;
-import org.example.netty_basecamp.domains.coupon.domain.service.CouponIssueDomainService;
-import org.example.netty_basecamp.domains.coupon.domain.vo.IssuedCouponStatusEnum;
-import org.example.netty_basecamp.domains.member.domain.Members;
-import org.example.netty_basecamp.domains.member.domain.MembersCreate;
+import org.example.netty_basecamp.basic.common.service.NumberGenerator;
+import org.example.netty_basecamp.basic.common.service.TimeGenerator;
+import org.example.netty_basecamp.basic.common.vo.Money;
+import org.example.netty_basecamp.basic.coupon.domain.Coupon;
+import org.example.netty_basecamp.basic.coupon.domain.CouponCreate;
+import org.example.netty_basecamp.basic.coupon.domain.IssuedCoupon;
+import org.example.netty_basecamp.basic.coupon.domain.service.CouponIssueDomainService;
+import org.example.netty_basecamp.basic.coupon.domain.vo.IssuedCouponStatusEnum;
+import org.example.netty_basecamp.basic.member.domain.Members;
+import org.example.netty_basecamp.basic.member.domain.MembersCreate;
 import org.example.netty_basecamp.fake.generator.FakeNumberGenerator;
 import org.example.netty_basecamp.fake.generator.FakeTimeGenerator;
 import org.junit.jupiter.api.Assertions;

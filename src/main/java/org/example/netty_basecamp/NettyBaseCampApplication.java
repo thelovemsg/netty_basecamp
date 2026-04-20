@@ -1,8 +1,8 @@
 package org.example.netty_basecamp;
 
-import org.example.netty_basecamp.netty.NettyBootcampServer;
-import org.example.netty_basecamp.netty.rest.AppConfig;
-import org.example.netty_basecamp.netty.rest.route.RouteRegistry;
+import org.example.netty_basecamp.basic.netty.NettyBootcampServer;
+import org.example.netty_basecamp.basic.netty.rest.AppConfig;
+import org.example.netty_basecamp.basic.netty.rest.route.RouteRegistry;
 
 public class NettyBaseCampApplication {
     public static void main(String[] args) throws Exception {

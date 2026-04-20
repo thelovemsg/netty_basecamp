@@ -1,6 +1,6 @@
 package org.example.netty_basecamp.fake.generator;
 
-import org.example.netty_basecamp.domains.common.service.TimeGenerator;
+import org.example.netty_basecamp.basic.common.service.TimeGenerator;
 
 public class FakeTimeGenerator implements TimeGenerator {
 

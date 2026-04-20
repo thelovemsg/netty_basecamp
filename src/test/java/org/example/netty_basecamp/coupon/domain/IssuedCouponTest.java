@@ -1,11 +1,11 @@
 package org.example.netty_basecamp.coupon.domain;
 
-import org.example.netty_basecamp.domains.common.service.NumberGenerator;
-import org.example.netty_basecamp.domains.common.service.TimeGenerator;
-import org.example.netty_basecamp.domains.common.vo.Money;
-import org.example.netty_basecamp.domains.coupon.domain.Coupon;
-import org.example.netty_basecamp.domains.coupon.domain.IssuedCoupon;
-import org.example.netty_basecamp.domains.coupon.domain.vo.IssuedCouponStatusEnum;
+import org.example.netty_basecamp.basic.common.service.NumberGenerator;
+import org.example.netty_basecamp.basic.common.service.TimeGenerator;
+import org.example.netty_basecamp.basic.common.vo.Money;
+import org.example.netty_basecamp.basic.coupon.domain.Coupon;
+import org.example.netty_basecamp.basic.coupon.domain.IssuedCoupon;
+import org.example.netty_basecamp.basic.coupon.domain.vo.IssuedCouponStatusEnum;
 import org.example.netty_basecamp.fake.generator.FakeNumberGenerator;
 import org.example.netty_basecamp.fake.generator.FakeTimeGenerator;
 import org.junit.jupiter.api.BeforeEach;

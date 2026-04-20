@@ -1,6 +1,6 @@
 package org.example.netty_basecamp.common.domain;
 
-import org.example.netty_basecamp.domains.common.vo.Inventory;
+import org.example.netty_basecamp.basic.common.vo.Inventory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;

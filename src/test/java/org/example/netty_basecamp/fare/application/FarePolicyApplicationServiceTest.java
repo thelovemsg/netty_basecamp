@@ -1,14 +1,14 @@
 package org.example.netty_basecamp.fare.application;
 
-import org.example.netty_basecamp.domains.common.vo.Money;
-import org.example.netty_basecamp.domains.fare.application.FarePolicyApplicationService;
-import org.example.netty_basecamp.domains.fare.domain.Fare;
-import org.example.netty_basecamp.domains.fare.domain.FareStatusEnum;
-import org.example.netty_basecamp.domains.fare.domain.policy.CalculationBasisEnum;
-import org.example.netty_basecamp.domains.fare.domain.policy.FarePolicy;
-import org.example.netty_basecamp.domains.fare.domain.policy.FarePolicyCreate;
-import org.example.netty_basecamp.domains.fare.domain.policy.FarePolicyTypeEnum;
-import org.example.netty_basecamp.domains.fare.domain.policy.FarePolicyUpdate;
+import org.example.netty_basecamp.basic.common.vo.Money;
+import org.example.netty_basecamp.basic.fare.application.FarePolicyApplicationService;
+import org.example.netty_basecamp.basic.fare.domain.Fare;
+import org.example.netty_basecamp.basic.fare.domain.FareStatusEnum;
+import org.example.netty_basecamp.basic.fare.domain.policy.CalculationBasisEnum;
+import org.example.netty_basecamp.basic.fare.domain.policy.FarePolicy;
+import org.example.netty_basecamp.basic.fare.domain.policy.FarePolicyCreate;
+import org.example.netty_basecamp.basic.fare.domain.policy.FarePolicyTypeEnum;
+import org.example.netty_basecamp.basic.fare.domain.policy.FarePolicyUpdate;
 import org.example.netty_basecamp.fake.generator.FakeTimeGenerator;
 import org.example.netty_basecamp.fake.repository.FakeFarePolicyRepository;
 import org.example.netty_basecamp.fake.repository.FakeFareRepository;
