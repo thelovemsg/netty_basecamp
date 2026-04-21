@@ -4,7 +4,8 @@
 
 업데이트 히스토리
 - 2026-04-16 생성
-- 2026-04-20 ADR-V010 ~ V012 추가
+- 2026-04-20 ADR-V010 ~ V016 추가
+- 2026-04-21 ADR-V017 ~ V019 추가
 
 ---
 
@@ -25,6 +26,9 @@
 14. [ADR-V014: Virtual Thread에서 응답 시 EventLoop으로 스케줄링](#adr-v014)
 15. [ADR-V015: Journey 계산 메서드 이름에서 get 접두어 제거 — Jackson 직렬화 충돌 방지](#adr-v015)
 16. [ADR-V016: HttpRoutingHandler 요청/응답 로깅 추가](#adr-v016)
+17. [ADR-V017: Trip HTTP API 제거 — 운행 수명주기를 MQTT Subscriber가 자동 처리](#adr-v017)
+18. [ADR-V018: 대시보드 Trip 버튼 제거 — GPS 수신 추적만 표시](#adr-v018)
+19. [ADR-V019: 운행 이력 조회 API 추가 — Subscriber 검증용 읽기 전용 엔드포인트](#adr-v019)
 
 ---
 
@@ -559,3 +563,102 @@ com.fasterxml.jackson.databind.JsonMappingException:
 
 ### 관련 파일
 - `cartracking/netty/rest/route/HttpRoutingHandler.java`
+
+---
+
+## ADR-V017: Trip HTTP API 제거 — 운행 수명주기를 MQTT Subscriber가 자동 처리 {#adr-v017}
+**날짜**: 2026-04-21
+
+### 문제
+`TripRouteConfig`에 운행 배차/출발/위치 기록/완료 REST API가 존재했다.
+
+```
+POST /api/cartracking/trips                       ← 운행 배차
+POST /api/cartracking/trips/{vehicleId}/depart    ← 출발
+POST /api/cartracking/trips/{vehicleId}/snapshots ← 위치 기록
+POST /api/cartracking/trips/{vehicleId}/complete  ← 운행 완료
+```
+
+실제 세계에서 운행은 차량 단말기(IoT)가 GPS를 전송하기 시작하는 순간 시작되고, GPS가 끊기면 종료된다. 서버가 REST API로 운행을 "만들어내는" 구조는 현실과 반대다.
+
+### 결정
+Trip 관련 HTTP API 전체를 삭제한다. 운행 수명주기는 MQTT Subscriber가 자동으로 처리한다.
+
+| 기존 (HTTP API) | 변경 후 (MQTT Subscriber 자동 처리) |
+|---|---|
+| `POST /trips` 호출 → Journey 생성 | 첫 GPS 수신 → Journey 자동 생성 |
+| `POST /trips/{id}/snapshots` 호출 → 위치 기록 | GPS 수신마다 → LocationSnapshot 자동 저장 |
+| `POST /trips/{id}/complete` 호출 → 운행 종료 | GPS 끊김 감지 → Journey 자동 종료 |
+
+### 삭제된 파일
+- `cartracking/netty/rest/config/TripRouteConfig.java`
+- `cartracking/netty/rest/controller/TripController.java`
+- `cartracking/netty/rest/dto/ScheduleTripRequest.java`
+- `cartracking/netty/rest/dto/LocationRequest.java`
+
+### 유지된 파일
+- `cartracking/vehicle/application/TripApplicationService.java` — Subscriber가 호출할 도메인 로직은 유지. `scheduleTrip`/`departTrip` 분리 → `startTrip` 단일 메서드로 단순화.
+
+### 판단 근거
+- REST API로 운행을 제어하는 구조는 "서버가 차량을 조종"하는 역전된 모델
+- MQTT pub/sub 모델에서 서버는 수신자(Subscriber)여야 하며, 차량이 보내는 이벤트에 반응해야 함
+- Subscriber 구현 전 임시로 만든 API였으므로 Subscriber 도입 시점에 제거하는 것이 적절
+
+---
+
+## ADR-V018: 대시보드 Trip 버튼 제거 — GPS 수신 추적만 표시 {#adr-v018}
+**날짜**: 2026-04-21
+
+### 문제
+`dashboard.html`에 운행 시작/위치 기록/운행 완료/경로 보기 버튼이 있었다. ADR-V017에서 Trip HTTP API를 제거했으므로 이 버튼들은 동작하지 않는다.
+
+### 결정
+Trip 관련 버튼 전체를 삭제하고, 대시보드는 GPS 수신 추적 전용으로 단순화한다.
+
+### 변경 전 버튼
+- 차량 등록, **운행 시작**, **위치 기록**, **운행 완료**, 새로고침, **경로 보기**
+
+### 변경 후 버튼
+- 차량 등록, 시뮬레이터 시작, 새로고침
+
+### 판단 근거
+- 대시보드는 "관제(모니터링)" 역할 — 사용자가 운행을 조작하는 인터페이스가 아님
+- MQTT Subscriber가 완성되면 GPS 수신 → 지도 마커 자동 갱신으로 추적이 완성됨
+- 불필요한 버튼 제거로 대시보드 역할이 명확해짐
+
+---
+
+## ADR-V019: 운행 이력 조회 API 추가 — Subscriber 검증용 읽기 전용 엔드포인트 {#adr-v019}
+**날짜**: 2026-04-21
+
+### 문제
+Trip HTTP API를 제거한 뒤, MQTT Subscriber가 GPS를 수신하고 Journey/LocationSnapshot을 자동으로 기록했을 때 실제로 데이터가 제대로 쌓이는지 확인할 수단이 없었다.
+
+### 결정
+운행 이력을 조회하는 읽기 전용 API를 추가하고 대시보드에 운행 이력 패널을 연결한다.
+
+### 추가된 API
+| Method | Path | 설명 |
+|--------|------|------|
+| GET | `/api/cartracking/vehicles/{vehicleId}/journeys` | 차량의 운행 이력 목록 (최신순) |
+| GET | `/api/cartracking/journeys/{journeyId}/route` | 특정 운행의 GPS 경로 포인트 목록 |
+
+### 추가된 파일
+- `cartracking/netty/rest/controller/JourneyController.java` — 조회 전용 컨트롤러
+- `cartracking/netty/rest/config/JourneyRouteConfig.java` — 라우트 등록
+
+### 변경된 파일
+- `JourneyRepository` — `findAllByTarget()` 추가
+- `InMemoryJourneyRepository` — `findAllByTarget()` 구현 (최신순 정렬)
+- `TripApplicationService` — `getVehicleJourneys()` 추가
+- `CarTrackingAppConfig` — Repository를 명시적으로 공유 인스턴스로 생성하도록 개선
+- `dashboard.html` — 사이드바 하단에 운행 이력 패널 추가, 운행 클릭 시 지도에 경로 표시
+
+### 대시보드 동작
+1. 차량 클릭 → 해당 차량의 운행 이력 목록 표시 (상태, 출발/도착 시간)
+2. 운행 클릭 → 지도에 보라색 경로선(Polyline) 표시
+
+### 판단 근거
+- Subscriber 완성 후 GPS 데이터가 실제로 쌓이는지 화면에서 바로 검증 가능
+- "직접 기록"하는 API가 아니라 "자동으로 쌓인 것을 조회"하는 구조 — 역할이 명확
+- `CarTrackingAppConfig`에서 Repository 공유 인스턴스를 명시적으로 생성함으로써, 추후 Subscriber도 동일 Repository에 주입받아 데이터 일관성 보장

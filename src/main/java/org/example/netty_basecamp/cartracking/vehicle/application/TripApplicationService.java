@@ -30,7 +30,7 @@ public class TripApplicationService {
         this.timeGenerator = timeGenerator;
     }
 
-    public Journey scheduleTrip(Long vehicleId, Location origin, Location destination) {
+    public Journey startTrip(Long vehicleId, Location origin) {
         Vehicle vehicle = vehicleRepository.findById(vehicleId);
         if (vehicle == null) {
             throw new IllegalArgumentException("Vehicle not found: " + vehicleId);
@@ -38,26 +38,11 @@ public class TripApplicationService {
 
         long currentTime = timeGenerator.millis();
         TrackingTarget target = TrackingTarget.of(vehicleId, TrackingTargetTypeEnum.VEHICLE);
-        Journey journey = Journey.create(target, origin, destination, currentTime);
-        return journeyRepository.save(journey);
-    }
-
-    public Journey departTrip(Long vehicleId) {
-        TrackingTarget target = TrackingTarget.of(vehicleId, TrackingTargetTypeEnum.VEHICLE);
-        Journey scheduled = journeyRepository.findScheduledByTarget(target);
-        if (scheduled == null) {
-            throw new IllegalStateException("배차된 운행이 없습니다: vehicleId=" + vehicleId);
-        }
-
-        Vehicle vehicle = vehicleRepository.findById(vehicleId);
-        long currentTime = timeGenerator.millis();
-
-        Journey departed = scheduled.depart(currentTime);
+        Journey journey = Journey.create(target, origin, null, currentTime);
+        Journey departed = journey.depart(currentTime);
         journeyRepository.save(departed);
 
-        Vehicle onTrip = vehicle.startTrip(currentTime);
-        vehicleRepository.save(onTrip);
-
+        vehicleRepository.save(vehicle.startTrip(currentTime));
         return departed;
     }
 
@@ -65,7 +50,7 @@ public class TripApplicationService {
         TrackingTarget target = TrackingTarget.of(vehicleId, TrackingTargetTypeEnum.VEHICLE);
         Journey activeJourney = journeyRepository.findActiveByTarget(target);
         if (activeJourney == null) {
-            throw new IllegalStateException("진행 중인 운행이 없습니다: vehicleId=" + vehicleId);
+            return null;
         }
 
         long currentTime = timeGenerator.millis();
@@ -83,13 +68,14 @@ public class TripApplicationService {
         Vehicle vehicle = vehicleRepository.findById(vehicleId);
         long currentTime = timeGenerator.millis();
 
-        Journey completed = activeJourney.arrive(currentTime);
-        journeyRepository.save(completed);
+        journeyRepository.save(activeJourney.arrive(currentTime));
+        vehicleRepository.save(vehicle.returnHome(currentTime));
+        return activeJourney.arrive(currentTime);
+    }
 
-        Vehicle returned = vehicle.returnHome(currentTime);
-        vehicleRepository.save(returned);
-
-        return completed;
+    public List<Journey> getVehicleJourneys(Long vehicleId) {
+        TrackingTarget target = TrackingTarget.of(vehicleId, TrackingTargetTypeEnum.VEHICLE);
+        return journeyRepository.findAllByTarget(target);
     }
 
     public List<LocationSnapshot> getTripRoute(Long journeyId) {

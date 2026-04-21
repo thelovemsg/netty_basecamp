@@ -10,62 +10,80 @@
         body { font-family: 'Segoe UI', sans-serif; height: 100vh; display: flex; flex-direction: column; }
         header { background: #1a1a2e; color: #fff; padding: 12px 20px; font-size: 18px; font-weight: bold; }
         .container { display: flex; flex: 1; overflow: hidden; }
-        .sidebar { width: 280px; background: #f5f5f5; border-right: 1px solid #ddd; display: flex; flex-direction: column; }
-        .sidebar h3 { padding: 12px 16px; background: #e8e8e8; border-bottom: 1px solid #ddd; font-size: 14px; }
-        #vehicle-list { flex: 1; overflow-y: auto; padding: 8px; }
-        .vehicle-item { padding: 10px 12px; margin-bottom: 6px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; cursor: pointer; }
+
+        .sidebar { width: 300px; background: #f5f5f5; border-right: 1px solid #ddd; display: flex; flex-direction: column; overflow: hidden; }
+        .sidebar-section { display: flex; flex-direction: column; flex: 1; overflow: hidden; border-bottom: 1px solid #ddd; }
+        .sidebar-section:last-child { border-bottom: none; }
+        .sidebar-section h3 { padding: 10px 14px; background: #e8e8e8; border-bottom: 1px solid #ddd; font-size: 13px; color: #333; flex-shrink: 0; }
+        .sidebar-list { flex: 1; overflow-y: auto; padding: 6px; }
+
+        .vehicle-item { padding: 10px 12px; margin-bottom: 5px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; cursor: pointer; }
         .vehicle-item:hover { background: #e3f2fd; }
         .vehicle-item.selected { background: #bbdefb; border-color: #42a5f5; }
         .vehicle-item .plate { font-weight: bold; font-size: 14px; }
-        .vehicle-item .info { font-size: 12px; color: #666; margin-top: 4px; }
-        .vehicle-item .status { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; color: #fff; }
+        .vehicle-item .info { font-size: 11px; color: #666; margin-top: 3px; }
+        .status { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; color: #fff; }
         .status-AVAILABLE { background: #4caf50; }
         .status-ON_TRIP { background: #ff9800; }
         .status-OFFLINE { background: #9e9e9e; }
+
+        .journey-item { padding: 8px 10px; margin-bottom: 5px; background: #fff; border-radius: 6px; border: 1px solid #e0e0e0; cursor: pointer; }
+        .journey-item:hover { background: #f3e5f5; }
+        .journey-item.selected { background: #e1bee7; border-color: #ab47bc; }
+        .journey-item .j-status { font-size: 11px; font-weight: bold; }
+        .journey-item .j-time { font-size: 11px; color: #666; margin-top: 3px; }
+        .j-status-IN_PROGRESS { color: #ff9800; }
+        .j-status-COMPLETED { color: #4caf50; }
+        .j-status-SCHEDULED { color: #9e9e9e; }
+
         #map { flex: 1; }
-        .controls { background: #1a1a2e; padding: 12px 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .controls { background: #1a1a2e; padding: 10px 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
         .controls button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 500; }
         .btn-register { background: #4caf50; color: #fff; }
-        .btn-trip { background: #2196f3; color: #fff; }
-        .btn-snapshot { background: #ff9800; color: #fff; }
-        .btn-complete { background: #f44336; color: #fff; }
+        .btn-simulator { background: #2196f3; color: #fff; }
         .btn-refresh { background: #78909c; color: #fff; }
         .controls button:hover { opacity: 0.85; }
         #log { background: #263238; color: #a5d6a7; padding: 8px 20px; font-size: 12px; font-family: monospace; max-height: 60px; overflow-y: auto; }
+
+        .empty-hint { padding: 16px; font-size: 12px; color: #999; text-align: center; }
     </style>
 </head>
 <body>
     <header>🚗 차량 관제 대시보드</header>
     <div class="container">
         <div class="sidebar">
-            <h3>등록 차량</h3>
-            <div id="vehicle-list"></div>
+            <div class="sidebar-section" style="flex: 1;">
+                <h3>등록 차량</h3>
+                <div id="vehicle-list" class="sidebar-list"></div>
+            </div>
+            <div class="sidebar-section" style="flex: 1.5;">
+                <h3>운행 이력 <span id="journey-vehicle-label" style="font-weight:normal; color:#666;"></span></h3>
+                <div id="journey-list" class="sidebar-list">
+                    <div class="empty-hint">차량을 선택하면 운행 이력이 표시됩니다.</div>
+                </div>
+            </div>
         </div>
         <div id="map"></div>
     </div>
     <div class="controls">
         <button class="btn-register" onclick="registerVehicle()">차량 등록</button>
-        <button class="btn-trip" onclick="scheduleAndDepart()">운행 시작</button>
-        <button class="btn-snapshot" onclick="recordSnapshot()">위치 기록</button>
-        <button class="btn-complete" onclick="completeTrip()">운행 완료</button>
+        <button class="btn-simulator" onclick="startSimulator()">시뮬레이터 시작</button>
         <button class="btn-refresh" onclick="refresh()">새로고침</button>
-        <button class="btn-trip" onclick="showRoute()">경로 보기</button>
     </div>
     <div id="log">로그: 대시보드 시작됨</div>
 
     <script>
         const API = 'http://localhost:8081/api/cartracking';
-        let map, markers = {}, routeLine = null, selectedVehicleId = null;
+        let map, markers = {}, routeLine = null;
+        let selectedVehicleId = null, selectedJourneyId = null;
 
-        // 지도 초기화 — 서울 중심
         map = L.map('map').setView([37.5665, 126.9780], 13);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap contributors'
         }).addTo(map);
 
         function log(msg) {
-            const el = document.getElementById('log');
-            el.textContent = `로그: ${msg}`;
+            document.getElementById('log').textContent = `로그: ${msg}`;
         }
 
         async function api(method, path, body) {
@@ -77,12 +95,12 @@
             return data;
         }
 
-        // 차량 목록 조회 + 지도 마커 갱신
         async function refresh() {
             try {
                 const vehicles = await api('GET', '/vehicles');
                 renderVehicleList(vehicles);
                 updateMarkers(vehicles);
+                if (selectedVehicleId) await loadJourneys(selectedVehicleId);
                 log(`차량 ${vehicles.length}대 조회 완료`);
             } catch (e) {
                 log(`오류: ${e.message}`);
@@ -91,9 +109,13 @@
 
         function renderVehicleList(vehicles) {
             const list = document.getElementById('vehicle-list');
+            if (vehicles.length === 0) {
+                list.innerHTML = '<div class="empty-hint">등록된 차량이 없습니다.</div>';
+                return;
+            }
             list.innerHTML = vehicles.map(v => `
                 <div class="vehicle-item ${v.id === selectedVehicleId ? 'selected' : ''}"
-                     onclick="selectVehicle(${v.id})">
+                     onclick="selectVehicle(${v.id}, '${v.plateNumber}')">
                     <div class="plate">${v.plateNumber}</div>
                     <div class="info">${v.type} · ID: ${v.id}</div>
                     <span class="status status-${v.status}">${v.status}</span>
@@ -102,41 +124,92 @@
         }
 
         function updateMarkers(vehicles) {
-            // 기존 마커 제거
             Object.values(markers).forEach(m => map.removeLayer(m));
             markers = {};
-
             vehicles.forEach(v => {
                 if (!v.location) return;
                 const lat = parseFloat(v.location.latitude);
                 const lng = parseFloat(v.location.longitude);
                 if (isNaN(lat) || isNaN(lng)) return;
-
-                const marker = L.marker([lat, lng])
+                markers[v.id] = L.marker([lat, lng])
                     .addTo(map)
                     .bindPopup(`<b>${v.plateNumber}</b><br>${v.type} · ${v.status}`);
-                markers[v.id] = marker;
             });
         }
 
-        function selectVehicle(id) {
+        async function selectVehicle(id, plate) {
             selectedVehicleId = id;
-            refresh();
+            selectedJourneyId = null;
+            document.getElementById('journey-vehicle-label').textContent = `— ${plate}`;
+            await refresh();
             if (markers[id]) {
                 map.setView(markers[id].getLatLng(), 15);
                 markers[id].openPopup();
             }
         }
 
-        // 차량 등록 (서울 내 랜덤 위치)
+        async function loadJourneys(vehicleId) {
+            try {
+                const journeys = await api('GET', `/vehicles/${vehicleId}/journeys`);
+                renderJourneyList(journeys);
+            } catch (e) {
+                document.getElementById('journey-list').innerHTML =
+                    `<div class="empty-hint">운행 이력 조회 실패: ${e.message}</div>`;
+            }
+        }
+
+        function renderJourneyList(journeys) {
+            const list = document.getElementById('journey-list');
+            if (journeys.length === 0) {
+                list.innerHTML = '<div class="empty-hint">운행 이력이 없습니다.</div>';
+                return;
+            }
+            list.innerHTML = journeys.map(j => {
+                const start = j.startedAt ? new Date(j.startedAt).toLocaleTimeString('ko-KR') : '-';
+                const end = j.arrivedAt ? new Date(j.arrivedAt).toLocaleTimeString('ko-KR') : '진행 중';
+                return `
+                    <div class="journey-item ${j.id === selectedJourneyId ? 'selected' : ''}"
+                         onclick="selectJourney(${j.id})">
+                        <div class="j-status j-status-${j.status}">${j.status} · #${j.id}</div>
+                        <div class="j-time">출발: ${start}</div>
+                        <div class="j-time">도착: ${end}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function selectJourney(journeyId) {
+            selectedJourneyId = journeyId;
+            try {
+                const snapshots = await api('GET', `/journeys/${journeyId}/route`);
+                if (routeLine) map.removeLayer(routeLine);
+
+                if (snapshots.length === 0) {
+                    log(`운행 #${journeyId} — 기록된 위치 없음`);
+                    await loadJourneys(selectedVehicleId);
+                    return;
+                }
+
+                const latlngs = snapshots.map(s => [
+                    parseFloat(s.location.latitude),
+                    parseFloat(s.location.longitude)
+                ]);
+                routeLine = L.polyline(latlngs, { color: '#9c27b0', weight: 4, opacity: 0.8 }).addTo(map);
+                map.fitBounds(routeLine.getBounds(), { padding: [40, 40] });
+                log(`운행 #${journeyId} 경로 표시 — ${snapshots.length}개 포인트`);
+                await loadJourneys(selectedVehicleId);
+            } catch (e) {
+                log(`경로 조회 오류: ${e.message}`);
+            }
+        }
+
         async function registerVehicle() {
-            const plates = ['서울12가3456', '경기34나7890', '인천56다1234', '부산78라5678'];
+            const plates = ['서울12가', '경기34나', '인천56다', '부산78라'];
             const types = ['SEDAN', 'SUV', 'VAN'];
-            const plate = plates[Math.floor(Math.random() * plates.length)] + Math.floor(Math.random() * 100);
+            const plate = plates[Math.floor(Math.random() * plates.length)] + Math.floor(Math.random() * 9000 + 1000);
             const type = types[Math.floor(Math.random() * types.length)];
             const homeLat = 37.5665 + (Math.random() - 0.5) * 0.05;
             const homeLng = 126.9780 + (Math.random() - 0.5) * 0.05;
-
             try {
                 const result = await api('POST', '/vehicles', { plateNumber: plate, type, homeLat, homeLng });
                 log(`차량 등록 완료: ${plate} (ID: ${result.id})`);
@@ -146,84 +219,15 @@
             }
         }
 
-        // 운행 시작 (배차 + 출발)
-        async function scheduleAndDepart() {
-            if (!selectedVehicleId) { log('차량을 선택하세요'); return; }
-            const originLat = 37.5665 + (Math.random() - 0.5) * 0.03;
-            const originLng = 126.9780 + (Math.random() - 0.5) * 0.03;
-            const destLat = 37.5665 + (Math.random() - 0.5) * 0.05;
-            const destLng = 126.9780 + (Math.random() - 0.5) * 0.05;
-
+        async function startSimulator() {
             try {
-                await api('POST', '/trips', { vehicleId: selectedVehicleId, originLat, originLng, destLat, destLng });
-                await api('POST', `/trips/${selectedVehicleId}/depart`);
-                log(`차량 ${selectedVehicleId} 운행 시작`);
-                refresh();
+                await api('POST', '/simulator/start');
+                log('시뮬레이터 시작 — GPS 수신 대기 중');
             } catch (e) {
-                log(`운행 시작 오류: ${e.message}`);
+                log(`시뮬레이터 오류: ${e.message}`);
             }
         }
 
-        // 위치 기록 (현재 위치에서 살짝 이동)
-        async function recordSnapshot() {
-            if (!selectedVehicleId) { log('차량을 선택하세요'); return; }
-            const marker = markers[selectedVehicleId];
-            let lat, lng;
-            if (marker) {
-                const pos = marker.getLatLng();
-                lat = pos.lat + (Math.random() - 0.5) * 0.005;
-                lng = pos.lng + (Math.random() - 0.5) * 0.005;
-            } else {
-                lat = 37.5665 + (Math.random() - 0.5) * 0.03;
-                lng = 126.9780 + (Math.random() - 0.5) * 0.03;
-            }
-
-            try {
-                await api('POST', `/trips/${selectedVehicleId}/snapshots`, { lat, lng });
-                log(`차량 ${selectedVehicleId} 위치 기록: ${lat.toFixed(4)}, ${lng.toFixed(4)}`);
-                refresh();
-            } catch (e) {
-                log(`위치 기록 오류: ${e.message}`);
-            }
-        }
-
-        // 운행 완료
-        async function completeTrip() {
-            if (!selectedVehicleId) { log('차량을 선택하세요'); return; }
-            try {
-                await api('POST', `/trips/${selectedVehicleId}/complete`);
-                log(`차량 ${selectedVehicleId} 운행 완료`);
-                refresh();
-            } catch (e) {
-                log(`운행 완료 오류: ${e.message}`);
-            }
-        }
-
-        // 경로 보기
-        async function showRoute() {
-            if (!selectedVehicleId) { log('차량을 선택하세요'); return; }
-            try {
-                // journeyId를 vehicleId로 시도 (데모 단순화)
-                const snapshots = await api('GET', `/trips/${selectedVehicleId}/route`);
-                if (routeLine) map.removeLayer(routeLine);
-
-                if (Array.isArray(snapshots) && snapshots.length > 0) {
-                    const latlngs = snapshots.map(s => [
-                        parseFloat(s.location.latitude),
-                        parseFloat(s.location.longitude)
-                    ]);
-                    routeLine = L.polyline(latlngs, { color: '#2196f3', weight: 4 }).addTo(map);
-                    map.fitBounds(routeLine.getBounds(), { padding: [30, 30] });
-                    log(`경로 표시: ${snapshots.length}개 포인트`);
-                } else {
-                    log('경로 데이터 없음');
-                }
-            } catch (e) {
-                log(`경로 조회 오류: ${e.message}`);
-            }
-        }
-
-        // 초기 로드
         refresh();
     </script>
 </body>

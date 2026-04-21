@@ -40,6 +40,14 @@ public class InMemoryJourneyRepository implements JourneyRepository {
     }
 
     @Override
+    public List<Journey> findAllByTarget(TrackingTarget target) {
+        return store.values().stream()
+                .filter(j -> j.getTarget().equals(target))
+                .sorted((a, b) -> Long.compare(b.getCreatedAt(), a.getCreatedAt()))
+                .toList();
+    }
+
+    @Override
     public List<Journey> findAll() {
         return new ArrayList<>(store.values());
     }

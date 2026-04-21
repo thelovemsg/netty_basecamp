@@ -1,13 +1,19 @@
 package org.example.netty_basecamp.cartracking.netty.rest;
 
 import com.hivemq.client.mqtt.mqtt3.Mqtt3AsyncClient;
+import org.example.netty_basecamp.basic.common.service.impl.CurrentTimeGenerator;
 import org.example.netty_basecamp.cartracking.mqtt.MqttClientFactory;
 import org.example.netty_basecamp.cartracking.mqtt.TelemetryPublisher;
+import org.example.netty_basecamp.cartracking.netty.rest.config.JourneyRouteConfig;
 import org.example.netty_basecamp.cartracking.netty.rest.config.SimulatorRouteConfig;
-import org.example.netty_basecamp.cartracking.netty.rest.config.TripRouteConfig;
 import org.example.netty_basecamp.cartracking.netty.rest.config.VehicleRouteConfig;
 import org.example.netty_basecamp.cartracking.netty.rest.route.RouteRegistry;
 import org.example.netty_basecamp.cartracking.simulator.SimulatorBootstrap;
+import org.example.netty_basecamp.cartracking.tracking.domain.repository.JourneyRepository;
+import org.example.netty_basecamp.cartracking.tracking.domain.repository.LocationSnapshotRepository;
+import org.example.netty_basecamp.cartracking.tracking.infrastructure.inmemory.InMemoryJourneyRepository;
+import org.example.netty_basecamp.cartracking.tracking.infrastructure.inmemory.InMemoryLocationSnapshotRepository;
+import org.example.netty_basecamp.cartracking.vehicle.application.TripApplicationService;
 import org.example.netty_basecamp.cartracking.vehicle.domain.repository.VehicleRepository;
 import org.example.netty_basecamp.cartracking.vehicle.infrastructure.inmemory.InMemoryVehicleRepository;
 
@@ -17,15 +23,18 @@ public class CarTrackingAppConfig {
     private static final int MQTT_PORT = 1883;
 
     public static RouteRegistry initRoutes() {
-        // VehicleRepository를 공유 — Vehicle 상태가 Trip과 동기화되어야 하므로 동일 인스턴스
         VehicleRepository vehicleRepository = new InMemoryVehicleRepository();
+        JourneyRepository journeyRepository = new InMemoryJourneyRepository();
+        LocationSnapshotRepository snapshotRepository = new InMemoryLocationSnapshotRepository();
 
-        // MQTT + Simulator DI 조립
+        TripApplicationService tripService = new TripApplicationService(
+                journeyRepository, vehicleRepository, snapshotRepository, new CurrentTimeGenerator());
+
         SimulatorBootstrap simulatorBootstrap = initSimulator(vehicleRepository);
 
         RouteRegistry registry = new RouteRegistry();
         VehicleRouteConfig.routes(vehicleRepository).forEach(registry::add);
-        TripRouteConfig.routes(vehicleRepository).forEach(registry::add);
+        JourneyRouteConfig.routes(tripService).forEach(registry::add);
         SimulatorRouteConfig.routes(simulatorBootstrap).forEach(registry::add);
         return registry;
     }
