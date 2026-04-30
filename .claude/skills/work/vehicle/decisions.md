@@ -6,6 +6,7 @@
 - 2026-04-16 생성
 - 2026-04-20 ADR-V010 ~ V016 추가
 - 2026-04-21 ADR-V017 ~ V019 추가
+- 2026-05-01 ADR-V020 ~ V022 추가
 
 ---
 
@@ -29,6 +30,9 @@
 17. [ADR-V017: Trip HTTP API 제거 — 운행 수명주기를 MQTT Subscriber가 자동 처리](#adr-v017)
 18. [ADR-V018: 대시보드 Trip 버튼 제거 — GPS 수신 추적만 표시](#adr-v018)
 19. [ADR-V019: 운행 이력 조회 API 추가 — Subscriber 검증용 읽기 전용 엔드포인트](#adr-v019)
+20. [ADR-V020: WebSocketOrHttpRouter 제거 — 핸들러 순차 배치로 단순화](#adr-v020)
+21. [ADR-V021: 회사별 WebSocket 필터링은 보류 — MQTT 성능 측정이 우선](#adr-v021)
+22. [ADR-V022: MQTT Subscriber가 첫 GPS 수신 시 Journey를 자동 생성](#adr-v022)
 
 ---
 
@@ -662,3 +666,96 @@ Trip HTTP API를 제거한 뒤, MQTT Subscriber가 GPS를 수신하고 Journey/L
 - Subscriber 완성 후 GPS 데이터가 실제로 쌓이는지 화면에서 바로 검증 가능
 - "직접 기록"하는 API가 아니라 "자동으로 쌓인 것을 조회"하는 구조 — 역할이 명확
 - `CarTrackingAppConfig`에서 Repository 공유 인스턴스를 명시적으로 생성함으로써, 추후 Subscriber도 동일 Repository에 주입받아 데이터 일관성 보장
+
+---
+
+## ADR-V020: WebSocketOrHttpRouter 제거 — 핸들러 순차 배치로 단순화 {#adr-v020}
+**날짜**: 2026-05-01
+
+### 문제
+같은 포트에서 REST + WebSocket을 처리하기 위해 `WebSocketOrHttpRouter` 내부 클래스를 만들어 첫 HTTP 요청의 URI를 보고 파이프라인을 동적으로 교체하는 방식을 사용했다. `retain()`, `fireChannelRead()`, `p.remove(this)` 등 수동 메시지 재전달 로직이 필요하고 불필요하게 복잡했다.
+
+### 결정
+`WebSocketOrHttpRouter` 내부 클래스를 제거하고, 핸들러를 순차적으로 배치한다.
+
+```java
+p.addLast(new HttpServerCodec());
+p.addLast(new HttpObjectAggregator(65536));
+p.addLast(new WebSocketServerProtocolHandler("/ws/vehicles"));
+p.addLast(new WebSocketFrameHandler(websocketClients));
+p.addLast(new HttpRoutingHandler(routeRegistry, virtualExecutor));
+```
+
+### 왜 동작하는가
+`WebSocketServerProtocolHandler`는 `/ws/vehicles` 경로의 HTTP Upgrade 요청만 핸드셰이크로 처리하고, 매칭되지 않는 일반 HTTP 요청은 다음 핸들러로 그대로 통과시킨다.
+
+### 제거된 것
+- `WebSocketOrHttpRouter` 내부 클래스 전체
+- `request.retain()` + `ctx.fireChannelRead(request)` 수동 재전달 로직
+- `p.remove(this)` 동적 파이프라인 조작
+
+### 판단 근거
+- Netty의 `WebSocketServerProtocolHandler`가 이미 경로 매칭 + 통과 기능을 내장하고 있으므로 별도 라우터가 불필요
+- `retain()`/`fireChannelRead()` 패턴은 참조 카운팅 실수 시 메모리 누수 위험이 있으므로 회피하는 것이 안전
+
+### 관련 파일
+- `cartracking/netty/channel/CarTrackingChannelInitializer.java`
+
+---
+
+## ADR-V021: 회사별 WebSocket 필터링은 보류 — MQTT 성능 측정이 우선 {#adr-v021}
+**날짜**: 2026-05-01
+
+### 검토한 내용
+Vehicle에 `companyId`를 추가하고, WebSocket 연결 시 회사별/관리자별 ChannelGroup을 분리하여 telemetry broadcast 대상을 필터링하는 방안을 검토했다.
+
+### 설계 (구현 보류)
+```
+ws://localhost:8081/ws/vehicles?companyId=acme   → companyChannels["acme"]에 추가
+ws://localhost:8081/ws/vehicles?role=admin        → adminChannels에 추가
+```
+
+Subscriber에서 GPS 수신 시:
+1. 해당 차량의 companyId로 `companyChannels.get(companyId).writeAndFlush(json)` — 회사 브라우저에만 전송
+2. `adminChannels.writeAndFlush(json)` — 관리자에게도 전송
+
+메시지 내용은 동일하고, **writeAndFlush 대상만 제어**하는 방식이다.
+
+### 보류 사유
+- 현재 프로젝트의 주 목표는 **MQTT 적용 + 성능 측정**이며, 멀티테넌시는 부차적
+- Vehicle 도메인에 companyId가 없는 상태에서 도입하면 도메인 모델 전체(Vehicle, VehicleCreate, DTO, Builder, Repository, 테스트)에 변경이 파급됨
+- MQTT 성능 측정이 완료된 뒤 필요 시 도입
+
+### 관련 파일
+- 변경 없음 (설계만 기록)
+
+---
+
+## ADR-V022: MQTT Subscriber가 첫 GPS 수신 시 Journey를 자동 생성 {#adr-v022}
+**날짜**: 2026-05-01
+
+### 문제
+Subscriber는 `recordSnapshot()`만 호출하고 있었다. `recordSnapshot()`은 진행 중인 Journey가 있어야 동작하는데, Journey를 생성하는 `startTrip()`을 호출하는 곳이 없었다. 결과적으로 시뮬레이터가 GPS를 publish해도 Journey가 없어서 snapshot이 저장되지 않았다.
+
+### 결정
+Subscriber의 callback에서 `recordSnapshot()`이 null을 반환하면(= 진행 중인 Journey가 없으면) `startTrip()`을 자동 호출하여 Journey를 생성한다.
+
+```java
+LocationSnapshot snapshot = tripApplicationService.recordSnapshot(vehicleId, location);
+if (snapshot == null) {
+    tripApplicationService.startTrip(vehicleId, location);
+}
+```
+
+### 동작 흐름
+```
+첫 번째 GPS 수신 → recordSnapshot() → Journey 없음(null) → startTrip() → Journey 생성
+두 번째 GPS 수신 → recordSnapshot() → Journey 있음 → LocationSnapshot 저장
+```
+
+### 판단 근거
+- 실제 세계에서 운행은 차량이 GPS를 전송하기 시작하는 순간 시작됨
+- 첫 GPS에서는 Journey 생성만 하고 snapshot은 저장하지 않음 — 출발 지점은 Journey의 origin에 이미 저장되므로 데이터 유실 없음
+
+### 관련 파일
+- `cartracking/mqtt/VehicleTelemetrySubscriber.java`

@@ -1,6 +1,9 @@
 package org.example.netty_basecamp.cartracking.netty.rest;
 
 import com.hivemq.client.mqtt.mqtt3.Mqtt3AsyncClient;
+import io.netty.channel.group.ChannelGroup;
+import io.netty.channel.group.DefaultChannelGroup;
+import io.netty.util.concurrent.GlobalEventExecutor;
 import org.example.netty_basecamp.basic.common.service.impl.CurrentTimeGenerator;
 import org.example.netty_basecamp.cartracking.mqtt.MqttClientFactory;
 import org.example.netty_basecamp.cartracking.mqtt.TelemetryPublisher;
@@ -23,7 +26,9 @@ public class CarTrackingAppConfig {
     private static final String MQTT_HOST = "localhost";
     private static final int MQTT_PORT = 1883;
 
-    public static RouteRegistry initRoutes() {
+    public record BootstrapResult(RouteRegistry routeRegistry, ChannelGroup websocketClients) {}
+
+    public static BootstrapResult init() {
         VehicleRepository vehicleRepository = new InMemoryVehicleRepository();
         JourneyRepository journeyRepository = new InMemoryJourneyRepository();
         LocationSnapshotRepository snapshotRepository = new InMemoryLocationSnapshotRepository();
@@ -31,17 +36,20 @@ public class CarTrackingAppConfig {
         TripApplicationService tripService = new TripApplicationService(
                 journeyRepository, vehicleRepository, snapshotRepository, new CurrentTimeGenerator());
 
+        // WebSocket 연결 클라이언트 목록
+        ChannelGroup websocketClients = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
+
         // MQTT Publisher + Simulator
         SimulatorBootstrap simulatorBootstrap = initSimulator(vehicleRepository);
 
-        // MQTT Subscriber — 브로커로부터 telemetry 수신
-        initSubscriber(tripService);
+        // MQTT Subscriber — 브로커로부터 telemetry 수신 + WebSocket broadcast
+        initSubscriber(tripService, websocketClients);
 
         RouteRegistry registry = new RouteRegistry();
         VehicleRouteConfig.routes(vehicleRepository).forEach(registry::add);
         JourneyRouteConfig.routes(tripService).forEach(registry::add);
         SimulatorRouteConfig.routes(simulatorBootstrap).forEach(registry::add);
-        return registry;
+        return new BootstrapResult(registry, websocketClients);
     }
 
     /**
@@ -65,10 +73,10 @@ public class CarTrackingAppConfig {
      *
      * @param tripService 수신한 텔레메트리 데이터를 처리할 트립 애플리케이션 서비스
      */
-    private static void initSubscriber(TripApplicationService tripService) {
+    private static void initSubscriber(TripApplicationService tripService, ChannelGroup websocketClients) {
         MqttClientFactory factory = new MqttClientFactory(MQTT_HOST, MQTT_PORT);
         Mqtt3AsyncClient mqttClient = factory.create("cartracking-subscriber");
-        VehicleTelemetrySubscriber subscriber = new VehicleTelemetrySubscriber(mqttClient, tripService);
+        VehicleTelemetrySubscriber subscriber = new VehicleTelemetrySubscriber(mqttClient, tripService, websocketClients);
         subscriber.connect();
         subscriber.subscribe();
     }

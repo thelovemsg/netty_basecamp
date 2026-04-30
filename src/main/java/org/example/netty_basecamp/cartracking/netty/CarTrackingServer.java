@@ -2,6 +2,7 @@ package org.example.netty_basecamp.cartracking.netty;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
+import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import org.apache.logging.log4j.LogManager;
@@ -20,10 +21,12 @@ public class CarTrackingServer {
 
     private final int port;
     private final RouteRegistry routeRegistry;
+    private final ChannelGroup websocketClients;
 
-    public CarTrackingServer(int port, RouteRegistry routeRegistry) {
+    public CarTrackingServer(int port, RouteRegistry routeRegistry, ChannelGroup websocketClients) {
         this.port = port;
         this.routeRegistry = routeRegistry;
+        this.websocketClients = websocketClients;
     }
 
     private static Properties loadConfig() {
@@ -58,7 +61,7 @@ public class CarTrackingServer {
                     .option(ChannelOption.SO_BACKLOG, 128)
                     .childOption(ChannelOption.SO_KEEPALIVE, true)
                     .childOption(ChannelOption.TCP_NODELAY, true)
-                    .childHandler(new CarTrackingChannelInitializer(routeRegistry, virtualExecutor));
+                    .childHandler(new CarTrackingChannelInitializer(routeRegistry, virtualExecutor, websocketClients));
 
             logger.info("CarTracking Server started on port: {}", port);
             ChannelFuture f = b.bind(port).sync();
