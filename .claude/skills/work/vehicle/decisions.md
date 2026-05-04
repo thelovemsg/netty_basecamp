@@ -7,6 +7,7 @@
 - 2026-04-20 ADR-V010 ~ V016 추가
 - 2026-04-21 ADR-V017 ~ V019 추가
 - 2026-05-01 ADR-V020 ~ V022 추가
+- 2026-05-04 ADR-V004 HiveMQ CE로 정정, ADR-V023 ~ V026 추가
 
 ---
 
@@ -33,6 +34,10 @@
 20. [ADR-V020: WebSocketOrHttpRouter 제거 — 핸들러 순차 배치로 단순화](#adr-v020)
 21. [ADR-V021: 회사별 WebSocket 필터링은 보류 — MQTT 성능 측정이 우선](#adr-v021)
 22. [ADR-V022: MQTT Subscriber가 첫 GPS 수신 시 Journey를 자동 생성](#adr-v022)
+23. [ADR-V023: 대시보드 WebSocket 실시간 추적 + 마커 애니메이션](#adr-v023)
+24. [ADR-V024: GpsInterpolator step당 최대 500m 제한](#adr-v024)
+25. [ADR-V025: 서버 시작 시 차량 10대 자동 등록(Seed Data)](#adr-v025)
+26. [ADR-V026: 시뮬레이터 종료 시 전체 차량 운행 자동 완료](#adr-v026)
 
 ---
 
@@ -74,8 +79,8 @@
 
 ---
 
-## ADR-V004: MQTT Broker — Eclipse Mosquitto 선택 {#adr-v004}
-**날짜**: 2026-04-16
+## ADR-V004: MQTT Broker — HiveMQ CE 선택 {#adr-v004}
+**날짜**: 2026-04-16 (2026-05-04 정정: Mosquitto → HiveMQ CE)
 
 ### 검토 대상
 | 항목 | Mosquitto | HiveMQ CE | EMQX | VerneMQ |
@@ -86,24 +91,22 @@
 | 학습 자료 | 매우 많음 | 많음 | 많음 | 보통 |
 
 ### 결정
-Eclipse Mosquitto 선택.
+HiveMQ CE 선택.
 
 ### 판단 근거
-- 학습/데모 목적에 가장 단순한 선택
-- 설정 최소화 — 브로커 운영 자체에 시간 쓰지 않고 아키텍처에 집중
-- MQTT 클라이언트(HiveMQ Client) 동작 검증용으로 충분
-- 실제 서비스 전환 시 브로커만 EMQX/HiveMQ로 교체하면 됨 (클라이언트 코드 변경 없음)
+- 클라이언트(HiveMQ Client)와 같은 생태계 — 호환성 보장
+- 별도 설정 파일 없이 기본값으로 동작 (익명 접속 허용, port 1883)
+- Docker 한 줄로 즉시 시작 가능
+- 실제 서비스 전환 시 브로커만 EMQX 등으로 교체하면 됨 (클라이언트 코드 변경 없음)
 
 ### 운영 방법
 ```yaml
 # docker-compose.yml
 services:
-  mosquitto:
-    image: eclipse-mosquitto:2
+  hivemq:
+    image: hivemq/hivemq-ce
     ports:
       - "1883:1883"
-    volumes:
-      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
 ```
 
 ---
@@ -379,54 +382,6 @@ public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
 - `cartracking/netty/rest/route/HttpRoutingHandler.java`
 
 ---
-
-## ADR-V013: 대시보드를 정적 HTML로 제공 — CORS 허용 방식 {#adr-v013}
-**날짜**: 2026-04-20
-
-### 문제
-- 차량 관제 대시보드 UI가 필요한데, Thymeleaf(서버사이드 렌더링)를 도입할지, 정적 HTML을 사용할지 결정 필요
-- Thymeleaf는 Spring 없이 standalone으로 사용 가능하지만 의존성과 설정 복잡도가 추가됨
-
-### 검토한 대안
-| 방식 | 장점 | 단점 |
-|------|------|------|
-| Thymeleaf standalone | 서버에서 HTML 렌더링, CORS 불필요 | 의존성 추가, 템플릿 엔진 설정 필요 |
-| Netty 정적 파일 서빙 | CORS 불필요, 한 서버로 통합 | StaticFileHandler 구현 필요 |
-| 정적 HTML + file:// (채택) | 의존성 없음, 가장 단순 | CORS 설정 필요 |
-
-### 결정
-브라우저에서 HTML 파일을 직접 열어(`file://`) API를 호출하는 방식을 사용한다. `HttpRoutingHandler`에 CORS 헤더를 추가하여 cross-origin 요청을 허용한다.
-
-### 구현
-```java
-// OPTIONS preflight 즉시 응답
-if ("OPTIONS".equals(method)) {
-    FullHttpResponse response = new DefaultFullHttpResponse(HTTP_1_1, OK);
-    setCorsHeaders(response);
-    response.headers().set(CONTENT_LENGTH, 0);
-    ctx.writeAndFlush(response).addListener(CLOSE);
-    return;
-}
-
-// 모든 JSON 응답에 CORS 헤더 추가
-private void setCorsHeaders(FullHttpResponse response) {
-    response.headers().set("Access-Control-Allow-Origin", "*");
-    response.headers().set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    response.headers().set("Access-Control-Allow-Headers", "Content-Type, Authorization");
-}
-```
-
-### 판단 근거
-- **데모/학습 목적** — 프로덕션 수준의 보안(특정 origin 제한)은 현재 불필요
-- **최소 복잡도** — Netty에 정적 파일 핸들러를 추가하거나 Thymeleaf 의존성을 도입하는 것보다 CORS 헤더 3줄이 훨씬 단순
-- **즉시 시작 가능** — HTML 파일을 더블클릭하면 바로 대시보드 동작
-- 실서비스 전환 시 `*` 대신 특정 origin으로 제한하거나 Netty 정적 파일 서빙으로 전환하면 됨
-
-### 관련 파일
-- `cartracking/netty/rest/route/HttpRoutingHandler.java`
-
----
-
 
 ## ADR-V013: 대시보드를 정적 HTML로 제공 — CORS 허용 방식 {#adr-v013}
 **날짜**: 2026-04-20
@@ -759,3 +714,127 @@ if (snapshot == null) {
 
 ### 관련 파일
 - `cartracking/mqtt/VehicleTelemetrySubscriber.java`
+
+---
+
+## ADR-V023: 대시보드 WebSocket 실시간 추적 + 마커 애니메이션 {#adr-v023}
+**날짜**: 2026-05-04
+
+### 문제
+대시보드가 REST API 수동 새로고침으로만 차량 위치를 표시했다. 마커가 순간이동하여 실시간 추적 느낌이 없었다.
+
+### 결정
+WebSocket(`ws://localhost:8081/ws/vehicles`)으로 telemetry를 실시간 수신하고, 마커를 부드럽게 이동시킨다.
+
+### 구현
+- **WebSocket 연결**: 페이지 로드 시 자동 연결, 끊기면 3초 후 재연결
+- **마커 애니메이션**: `requestAnimationFrame`으로 4초간 선형 보간 이동 (시뮬레이터 5초 간격에 맞춤)
+- **점(dot) 궤적**: 5초마다 `circleMarker`로 수신 위치를 점으로 표시, 차량별 색상 구분
+- **수신 카운트**: 점 툴팁에 몇 번째 수신인지 표시
+- **지역 이동 버튼**: 서울/대전/대구/부산/경북/경남/경기/제주 — `flyTo`로 부드럽게 이동
+
+### 판단 근거
+- 서버가 이미 WebSocket broadcast를 구현하고 있었으므로(ADR-V020) 대시보드에서 연결만 하면 됨
+- 순간이동 대신 보간 애니메이션으로 차량 이동 경로를 직관적으로 파악 가능
+- 점 궤적으로 몇 번째 데이터인지, 어디까지 이동했는지 시각적 확인 가능
+
+### 관련 파일
+- `dashboard.html`
+
+---
+
+## ADR-V024: GpsInterpolator step당 최대 500m 제한 {#adr-v024}
+**날짜**: 2026-05-04
+
+### 문제
+기존 `GpsInterpolator`가 MAX_STEPS=30으로 제한되어, 30km 이상 경로에서 step당 1km 이상 점프가 발생했다. 지도에서 비현실적인 순간이동으로 보였다.
+
+### 결정
+MAX_STEPS 상한을 제거하고, step당 최대 0.5km(500m)가 되도록 step 수를 자동 계산한다.
+
+### 변경
+```java
+// Before
+private static final int MAX_STEPS = 30;
+int steps = Math.max(MIN_STEPS, Math.min(MAX_STEPS, (int) Math.round(distanceKm)));
+
+// After
+private static final double MAX_STEP_KM = 0.5;
+int steps = Math.max(MIN_STEPS, (int) Math.ceil(distanceKm / MAX_STEP_KM));
+```
+
+### 예시
+| 거리 | Before (steps) | After (steps) | step당 이동 |
+|------|---------------|---------------|------------|
+| 5km  | 5             | 10            | 500m       |
+| 20km | 20            | 40            | 500m       |
+| 40km | 30 (캡)       | 80            | 500m       |
+
+### 판단 근거
+- 5초 간격으로 500m 이동 = 시속 360km → 시뮬레이션 데모 속도로 적절
+- 어떤 거리의 경로든 일정한 간격으로 점이 찍혀 지도에서 자연스러움
+
+### 관련 파일
+- `cartracking/simulator/GpsInterpolator.java`
+
+---
+
+## ADR-V025: 서버 시작 시 차량 10대 자동 등록(Seed Data) {#adr-v025}
+**날짜**: 2026-05-04
+
+### 문제
+시뮬레이터 테스트를 위해 매번 REST API로 차량을 수동 등록해야 했다.
+
+### 결정
+`CarTrackingAppConfig.init()`에서 차량 10대를 서울 영역 내 랜덤 위치에 자동 등록한다.
+
+### 구현
+- 번호판: `서울11가1001` ~ `제주10차1010`
+- 차종: SEDAN/SUV/VAN 순환
+- 출발 위치: `SeoulRouteGenerator.randomLocation()`으로 서울 바운딩 박스 내 랜덤 배치
+
+### 판단 근거
+- InMemory 저장소라 서버 재시작 시 데이터가 사라지므로 seed data가 필요
+- 수동 등록 반복 작업 제거로 시뮬레이터 테스트 즉시 시작 가능
+- 대시보드 진입 시 바로 차량 목록이 표시됨
+
+### 관련 파일
+- `cartracking/netty/rest/CarTrackingAppConfig.java`
+
+---
+
+## ADR-V026: 시뮬레이터 종료 시 전체 차량 운행 자동 완료 {#adr-v026}
+**날짜**: 2026-05-04
+
+### 문제
+시뮬레이터를 멈추면 `VehicleSimulator.stop()`으로 publish만 중단되고, Journey는 IN_PROGRESS 상태로 남아있었다. Vehicle도 ON_TRIP 상태 그대로 유지되어 재시작 시 `startTrip()` 예외 발생.
+
+### 결정
+`SimulatorBootstrap.stop()`에서 각 차량의 `completeTrip()`을 호출하여 Journey를 COMPLETED로, Vehicle을 AVAILABLE로 전환한다.
+
+### 변경
+```java
+public void stop() {
+    simulators.forEach(VehicleSimulator::stop);
+    virtualExecutor.shutdown();
+
+    for (VehicleSimulator sim : simulators) {
+        try {
+            tripService.completeTrip(sim.getVehicleId());
+        } catch (IllegalStateException e) {
+            // Journey가 없는 경우 (첫 GPS 수신 전 종료) 건너뜀
+        }
+    }
+    simulators.clear();
+    started = false;
+}
+```
+
+### 판단 근거
+- 시뮬레이터 멈춤 = 운행 종료 — 대시보드에서 COMPLETED 이력을 즉시 조회 가능
+- Vehicle 상태가 AVAILABLE로 복귀되어 재시작 시 정상 동작
+- Journey가 없는 차량(첫 GPS 수신 전 종료)은 예외를 무시하여 안전하게 처리
+
+### 관련 파일
+- `cartracking/simulator/SimulatorBootstrap.java`
+- `cartracking/simulator/VehicleSimulator.java` — `getVehicleId()` getter 추가
