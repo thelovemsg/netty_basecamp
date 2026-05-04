@@ -41,11 +41,16 @@
         .controls button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 500; }
         .btn-register { background: #4caf50; color: #fff; }
         .btn-simulator { background: #2196f3; color: #fff; }
+        .btn-stop { background: #e53935; color: #fff; }
         .btn-refresh { background: #78909c; color: #fff; }
         .controls button:hover { opacity: 0.85; }
         #log { background: #263238; color: #a5d6a7; padding: 8px 20px; font-size: 12px; font-family: monospace; max-height: 60px; overflow-y: auto; }
 
         .empty-hint { padding: 16px; font-size: 12px; color: #999; text-align: center; }
+
+        .region-bar { position: absolute; top: 60px; right: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 6px; }
+        .region-btn { padding: 10px 16px; background: rgba(26,26,46,0.85); color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 15px; font-weight: bold; letter-spacing: 1px; }
+        .region-btn:hover { background: rgba(33,150,243,0.9); }
     </style>
 </head>
 <body>
@@ -63,19 +68,35 @@
                 </div>
             </div>
         </div>
-        <div id="map"></div>
+        <div id="map">
+            <div class="region-bar">
+                <button class="region-btn" onclick="goRegion(37.5665,126.9780,10)">서울</button>
+                <button class="region-btn" onclick="goRegion(36.3504,127.3845,10)">대전</button>
+                <button class="region-btn" onclick="goRegion(35.8714,128.6014,10)">대구</button>
+                <button class="region-btn" onclick="goRegion(35.1796,129.0756,10)">부산</button>
+                <button class="region-btn" onclick="goRegion(36.4919,128.8889,8)">경북</button>
+                <button class="region-btn" onclick="goRegion(35.4606,128.2132,8)">경남</button>
+                <button class="region-btn" onclick="goRegion(37.4138,127.5183,8)">경기</button>
+                <button class="region-btn" onclick="goRegion(33.4996,126.5312,9)">제주</button>
+            </div>
+        </div>
     </div>
     <div class="controls">
         <button class="btn-register" onclick="registerVehicle()">차량 등록</button>
         <button class="btn-simulator" onclick="startSimulator()">시뮬레이터 시작</button>
+        <button class="btn-stop" onclick="stopSimulator()">시뮬레이터 멈춤</button>
         <button class="btn-refresh" onclick="refresh()">새로고침</button>
     </div>
     <div id="log">로그: 대시보드 시작됨</div>
 
     <script>
         const API = 'http://localhost:8081/api/cartracking';
-        let map, markers = {}, routeLine = null;
+        const WS_URL = 'ws://localhost:8081/ws/vehicles';
+        let map, markers = {}, routeLine = null, ws = null;
+        let trailDots = {};  // vehicleId → [circleMarker, ...]
+        let trailCount = {}; // vehicleId → 수신 횟수
         let selectedVehicleId = null, selectedJourneyId = null;
+        const VEHICLE_COLORS = ['#e53935','#1e88e5','#43a047','#fb8c00','#8e24aa','#00acc1','#6d4c41','#d81b60'];
 
         map = L.map('map').setView([37.5665, 126.9780], 13);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -86,6 +107,67 @@
             document.getElementById('log').textContent = `로그: ${msg}`;
         }
 
+        function goRegion(lat, lng, zoom) {
+            map.flyTo([lat, lng], zoom, { duration: 1.2 });
+        }
+
+        // --- 부드러운 마커 이동 ---
+        function animateMarker(marker, targetLatLng, durationMs) {
+            const start = marker.getLatLng();
+            const startTime = performance.now();
+            function step(now) {
+                const t = Math.min((now - startTime) / durationMs, 1);
+                const lat = start.lat + (targetLatLng[0] - start.lat) * t;
+                const lng = start.lng + (targetLatLng[1] - start.lng) * t;
+                marker.setLatLng([lat, lng]);
+                if (t < 1) requestAnimationFrame(step);
+            }
+            requestAnimationFrame(step);
+        }
+
+        // --- WebSocket 실시간 수신 ---
+        function connectWebSocket() {
+            if (ws && ws.readyState <= 1) return;
+            ws = new WebSocket(WS_URL);
+            ws.onopen = () => log('WebSocket 연결됨');
+            ws.onclose = () => { log('WebSocket 끊김 — 3초 후 재연결'); setTimeout(connectWebSocket, 3000); };
+            ws.onerror = () => {};
+            ws.onmessage = (event) => {
+                try {
+                    const t = JSON.parse(event.data);
+                    const vid = t.vehicleId;
+                    const latlng = [parseFloat(t.latitude), parseFloat(t.longitude)];
+                    const color = VEHICLE_COLORS[(vid - 1) % VEHICLE_COLORS.length];
+
+                    // 수신 카운트
+                    trailCount[vid] = (trailCount[vid] || 0) + 1;
+
+                    // 점 찍기
+                    if (!trailDots[vid]) trailDots[vid] = [];
+                    const dot = L.circleMarker(latlng, {
+                        radius: 5, color: color, fillColor: color, fillOpacity: 0.8, weight: 1
+                    }).addTo(map).bindTooltip(`#${vid} — ${trailCount[vid]}번째`, { direction: 'top' });
+                    trailDots[vid].push(dot);
+
+                    // 차량 마커 이동
+                    if (markers[vid]) {
+                        animateMarker(markers[vid], latlng, 4000);
+                        markers[vid].getPopup()?.setContent(
+                            `<b>차량 #${vid}</b><br>속도: ${t.speed?.toFixed(1)} km/h<br>${t.status}<br>수신: ${trailCount[vid]}회`);
+                    } else {
+                        markers[vid] = L.marker(latlng)
+                            .addTo(map)
+                            .bindPopup(`<b>차량 #${vid}</b><br>속도: ${t.speed?.toFixed(1)} km/h<br>${t.status}<br>수신: ${trailCount[vid]}회`);
+                    }
+                    if (selectedVehicleId === vid) {
+                        map.panTo(latlng, { animate: true, duration: 1 });
+                    }
+                    log(`차량 #${vid} — ${trailCount[vid]}번째 수신 [${latlng[0].toFixed(4)}, ${latlng[1].toFixed(4)}]`);
+                } catch (e) { /* ignore parse error */ }
+            };
+        }
+        connectWebSocket();
+
         async function api(method, path, body) {
             const opts = { method, headers: { 'Content-Type': 'application/json' } };
             if (body) opts.body = JSON.stringify(body);
@@ -95,9 +177,25 @@
             return data;
         }
 
+        function clearTrails() {
+            Object.values(trailDots).forEach(dots => dots.forEach(d => map.removeLayer(d)));
+            trailDots = {};
+            trailCount = {};
+        }
+
         async function refresh() {
             try {
+                clearTrails();
                 const vehicles = await api('GET', '/vehicles');
+
+                // 각 차량의 운행 건수를 조회
+                for (const v of vehicles) {
+                    try {
+                        const journeys = await api('GET', `/vehicles/${v.id}/journeys`);
+                        v.journeyCount = journeys.length;
+                    } catch (e) { v.journeyCount = 0; }
+                }
+
                 renderVehicleList(vehicles);
                 updateMarkers(vehicles);
                 if (selectedVehicleId) await loadJourneys(selectedVehicleId);
@@ -117,7 +215,7 @@
                 <div class="vehicle-item ${v.id === selectedVehicleId ? 'selected' : ''}"
                      onclick="selectVehicle(${v.id}, '${v.plateNumber}')">
                     <div class="plate">${v.plateNumber}</div>
-                    <div class="info">${v.type} · ID: ${v.id}</div>
+                    <div class="info">${v.type} · ID: ${v.id} · 운행 ${v.journeyCount || 0}건</div>
                     <span class="status status-${v.status}">${v.status}</span>
                 </div>
             `).join('');
@@ -151,6 +249,7 @@
         async function loadJourneys(vehicleId) {
             try {
                 const journeys = await api('GET', `/vehicles/${vehicleId}/journeys`);
+                console.log("journeys :: ", journeys)
                 renderJourneyList(journeys);
             } catch (e) {
                 document.getElementById('journey-list').innerHTML =
@@ -159,6 +258,7 @@
         }
 
         function renderJourneyList(journeys) {
+            console.log("journeys :: ", journeys)
             const list = document.getElementById('journey-list');
             if (journeys.length === 0) {
                 list.innerHTML = '<div class="empty-hint">운행 이력이 없습니다.</div>';
@@ -222,9 +322,21 @@
         async function startSimulator() {
             try {
                 await api('POST', '/simulator/start');
-                log('시뮬레이터 시작 — GPS 수신 대기 중');
+                connectWebSocket();
+                log('시뮬레이터 시작 — WebSocket으로 실시간 수신 중');
             } catch (e) {
                 log(`시뮬레이터 오류: ${e.message}`);
+            }
+        }
+
+        async function stopSimulator() {
+            try {
+                await api('POST', '/simulator/stop');
+                selectedVehicleId = null;
+                await refresh();
+                log('시뮬레이터 멈춤 — 운행 이력 조회 완료');
+            } catch (e) {
+                log(`시뮬레이터 멈춤 오류: ${e.message}`);
             }
         }
 

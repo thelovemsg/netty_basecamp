@@ -7,11 +7,11 @@ import java.util.List;
 
 public class GpsInterpolator {
 
+    private static final double MAX_STEP_KM = 0.5;
     private static final int MIN_STEPS = 3;
-    private static final int MAX_STEPS = 30;
 
     public List<Location> interpolate(Location origin, Location destination, int steps) {
-        List<Location> waypoints = new ArrayList<>(steps);
+        List<Location> waypoints = new ArrayList<>(steps + 1);
         double startLat = origin.getLatitude().doubleValue();
         double startLng = origin.getLongitude().doubleValue();
         double endLat = destination.getLatitude().doubleValue();
@@ -27,10 +27,14 @@ public class GpsInterpolator {
     }
 
     public int calculateSteps(Location origin, Location destination) {
-        double latDiff = origin.getLatitude().doubleValue() - destination.getLatitude().doubleValue();
-        double lngDiff = origin.getLongitude().doubleValue() - destination.getLongitude().doubleValue();
-        double distanceKm = Math.sqrt(latDiff * latDiff + lngDiff * lngDiff) * 111;
-        int steps = (int) Math.round(distanceKm);
-        return Math.max(MIN_STEPS, Math.min(MAX_STEPS, steps));
+        double distanceKm = distanceKm(origin, destination);
+        int steps = (int) Math.ceil(distanceKm / MAX_STEP_KM);
+        return Math.max(MIN_STEPS, steps);
+    }
+
+    private double distanceKm(Location a, Location b) {
+        double latDiff = a.getLatitude().doubleValue() - b.getLatitude().doubleValue();
+        double lngDiff = a.getLongitude().doubleValue() - b.getLongitude().doubleValue();
+        return Math.sqrt(latDiff * latDiff + lngDiff * lngDiff) * 111;
     }
 }

@@ -1,6 +1,7 @@
 package org.example.netty_basecamp.cartracking.simulator;
 
 import org.example.netty_basecamp.cartracking.mqtt.TelemetryPublisher;
+import org.example.netty_basecamp.cartracking.vehicle.application.TripApplicationService;
 import org.example.netty_basecamp.cartracking.vehicle.domain.Vehicle;
 import org.example.netty_basecamp.cartracking.vehicle.domain.repository.VehicleRepository;
 import org.apache.logging.log4j.LogManager;
@@ -17,14 +18,16 @@ public class SimulatorBootstrap {
 
     private final VehicleRepository vehicleRepository;
     private final TelemetryPublisher publisher;
-    private final ExecutorService virtualExecutor;
+    private final TripApplicationService tripService;
+    private ExecutorService virtualExecutor;
     private final List<VehicleSimulator> simulators = new ArrayList<>();
     private boolean started = false;
 
-    public SimulatorBootstrap(VehicleRepository vehicleRepository, TelemetryPublisher publisher) {
+    public SimulatorBootstrap(VehicleRepository vehicleRepository, TelemetryPublisher publisher,
+                              TripApplicationService tripService) {
         this.vehicleRepository = vehicleRepository;
         this.publisher = publisher;
-        this.virtualExecutor = Executors.newVirtualThreadPerTaskExecutor();
+        this.tripService = tripService;
     }
 
     public void start() {
@@ -36,6 +39,7 @@ public class SimulatorBootstrap {
             throw new IllegalStateException("등록된 차량이 없습니다. 차량을 먼저 등록해주세요.");
         }
 
+        virtualExecutor = Executors.newVirtualThreadPerTaskExecutor();
         for (Vehicle v : vehicles) {
             VehicleSimulator sim = new VehicleSimulator(
                     v.getId(), new SeoulRouteGenerator(), new GpsInterpolator(),
@@ -50,10 +54,21 @@ public class SimulatorBootstrap {
 
     public void stop() {
         simulators.forEach(VehicleSimulator::stop);
-        simulators.clear();
         virtualExecutor.shutdown();
+
+        // 각 차량의 진행 중인 운행을 완료 처리
+        for (VehicleSimulator sim : simulators) {
+            try {
+                tripService.completeTrip(sim.getVehicleId());
+                log.info("운행 완료 처리 [vehicleId={}]", sim.getVehicleId());
+            } catch (IllegalStateException e) {
+                log.debug("운행 완료 건너뜀 [vehicleId={}]: {}", sim.getVehicleId(), e.getMessage());
+            }
+        }
+
+        simulators.clear();
         started = false;
-        log.info("시뮬레이터 종료");
+        log.info("시뮬레이터 종료 — 전체 운행 완료 처리됨");
     }
 
     public boolean isStarted() {

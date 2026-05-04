@@ -62,6 +62,10 @@ public class VehicleSimulator implements Runnable {
         running = false;
     }
 
+    public Long getVehicleId() {
+        return vehicleId;
+    }
+
     private double calculateSpeed(int steps) {
         return 30.0 + (steps * 2.0);
     }

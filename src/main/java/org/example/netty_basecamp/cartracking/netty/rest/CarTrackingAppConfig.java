@@ -17,7 +17,11 @@ import org.example.netty_basecamp.cartracking.tracking.domain.repository.Journey
 import org.example.netty_basecamp.cartracking.tracking.domain.repository.LocationSnapshotRepository;
 import org.example.netty_basecamp.cartracking.tracking.infrastructure.inmemory.InMemoryJourneyRepository;
 import org.example.netty_basecamp.cartracking.tracking.infrastructure.inmemory.InMemoryLocationSnapshotRepository;
+import org.example.netty_basecamp.cartracking.simulator.SeoulRouteGenerator;
 import org.example.netty_basecamp.cartracking.vehicle.application.TripApplicationService;
+import org.example.netty_basecamp.cartracking.vehicle.domain.Vehicle;
+import org.example.netty_basecamp.cartracking.vehicle.domain.dto.VehicleCreate;
+import org.example.netty_basecamp.cartracking.vehicle.domain.enums.VehicleTypeEnum;
 import org.example.netty_basecamp.cartracking.vehicle.domain.repository.VehicleRepository;
 import org.example.netty_basecamp.cartracking.vehicle.infrastructure.inmemory.InMemoryVehicleRepository;
 
@@ -28,6 +32,12 @@ public class CarTrackingAppConfig {
 
     public record BootstrapResult(RouteRegistry routeRegistry, ChannelGroup websocketClients) {}
 
+    private static final String[] PLATES = {
+            "서울11가1001", "서울22나2002", "경기33다3003", "인천44라4004", "부산55마5005",
+            "대전66바6006", "광주77사7007", "울산88아8008", "세종99자9009", "제주10차1010"
+    };
+    private static final VehicleTypeEnum[] TYPES = VehicleTypeEnum.values();
+
     public static BootstrapResult init() {
         VehicleRepository vehicleRepository = new InMemoryVehicleRepository();
         JourneyRepository journeyRepository = new InMemoryJourneyRepository();
@@ -36,11 +46,14 @@ public class CarTrackingAppConfig {
         TripApplicationService tripService = new TripApplicationService(
                 journeyRepository, vehicleRepository, snapshotRepository, new CurrentTimeGenerator());
 
+        // 차량 10대 미리 등록 (서울 영역 내 랜덤 출발지)
+        seedVehicles(vehicleRepository);
+
         // WebSocket 연결 클라이언트 목록
         ChannelGroup websocketClients = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
 
         // MQTT Publisher + Simulator
-        SimulatorBootstrap simulatorBootstrap = initSimulator(vehicleRepository);
+        SimulatorBootstrap simulatorBootstrap = initSimulator(vehicleRepository, tripService);
 
         // MQTT Subscriber — 브로커로부터 telemetry 수신 + WebSocket broadcast
         initSubscriber(tripService, websocketClients);
@@ -59,12 +72,13 @@ public class CarTrackingAppConfig {
      * @param vehicleRepository 차량 데이터 접근 레포지토리
      * @return 초기화된 SimulatorBootstrap 인스턴스
      */
-    private static SimulatorBootstrap initSimulator(VehicleRepository vehicleRepository) {
+    private static SimulatorBootstrap initSimulator(VehicleRepository vehicleRepository,
+                                                       TripApplicationService tripService) {
         MqttClientFactory factory = new MqttClientFactory(MQTT_HOST, MQTT_PORT);
         Mqtt3AsyncClient mqttClient = factory.create("cartracking-simulator");
         TelemetryPublisher publisher = new TelemetryPublisher(mqttClient);
         publisher.connect();
-        return new SimulatorBootstrap(vehicleRepository, publisher);
+        return new SimulatorBootstrap(vehicleRepository, publisher, tripService);
     }
 
     /**
@@ -73,6 +87,19 @@ public class CarTrackingAppConfig {
      *
      * @param tripService 수신한 텔레메트리 데이터를 처리할 트립 애플리케이션 서비스
      */
+    private static void seedVehicles(VehicleRepository repository) {
+        SeoulRouteGenerator routeGen = new SeoulRouteGenerator();
+        long now = System.currentTimeMillis();
+        for (int i = 0; i < PLATES.length; i++) {
+            VehicleCreate create = VehicleCreate.builder()
+                    .plateNumber(PLATES[i])
+                    .type(TYPES[i % TYPES.length])
+                    .homeLocation(routeGen.randomLocation())
+                    .build();
+            repository.save(Vehicle.create(create, now));
+        }
+    }
+
     private static void initSubscriber(TripApplicationService tripService, ChannelGroup websocketClients) {
         MqttClientFactory factory = new MqttClientFactory(MQTT_HOST, MQTT_PORT);
         Mqtt3AsyncClient mqttClient = factory.create("cartracking-subscriber");
