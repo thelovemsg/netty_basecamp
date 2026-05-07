@@ -8,7 +8,7 @@
 - 2026-04-21 ADR-V017 ~ V019 추가
 - 2026-05-01 ADR-V020 ~ V022 추가
 - 2026-05-04 ADR-V004 HiveMQ CE로 정정, ADR-V023 ~ V026 추가
-- 2026-05-07 ADR-V025 차량 수 10→1000대 변경, ADR-V027 시뮬레이터 count 파라미터 추가, ADR-V028 Log4j2 기반 성능 계측
+- 2026-05-07 ADR-V025 차량 수 10→1000대 변경, ADR-V027 시뮬레이터 count 파라미터 추가, ADR-V028 Log4j2 기반 성능 계측, ADR-V029 HTTP Keep-Alive 병목 확인
 
 ---
 
@@ -41,6 +41,7 @@
 26. [ADR-V026: 시뮬레이터 종료 시 전체 차량 운행 자동 완료](#adr-v026)
 27. [ADR-V027: 시뮬레이터 start에 count 파라미터 추가 — 차량 수 스케일업 부하 테스트 지원](#adr-v027)
 28. [ADR-V028: PipelineMetrics 집계 클래스 + Log4j2 — 파이프라인 병목 구간 식별](#adr-v028)
+29. [ADR-V029: HTTP Keep-Alive 미지원 병목 확인 — 부하 테스트 S1에서 50% SocketException 발생](#adr-v029)
 
 ---
 
@@ -1085,3 +1086,87 @@ logger.perf.appenderRef.perf.ref = perfLogger
 - `src/main/resources/log4j2.properties` — perf Appender/Logger
 - `cartracking/mqtt/VehicleTelemetrySubscriber.java` — MQTT 파이프라인 계측
 - `cartracking/netty/rest/route/HttpRoutingHandler.java` — REST 파이프라인 계측
+
+---
+
+## ADR-V029: HTTP Keep-Alive 미지원 병목 확인 — 부하 테스트 S1에서 50% SocketException 발생 {#adr-v029}
+**날짜**: 2026-05-07
+
+### 문제
+Phase 1 부하 테스트 S1(차량 10대, REST 10 threads × 100 loops)을 JMeter로 실행한 결과, **약 50%의 요청이 SocketException으로 실패**했다.
+
+```
+# JMeter .jtl 결과 패턴 (200 OK → 실패 → 200 OK → 실패 반복)
+200,OK
+0,SocketException: 현재 연결은 사용자의 호스트 시스템의 소프트웨어에 의해 중단되었습니다
+200,OK
+0,SocketException: 현재 연결은 사용자의 호스트 시스템의 소프트웨어에 의해 중단되었습니다
+```
+
+### 원인 분석
+
+서버와 클라이언트의 **Keep-Alive 설정 불일치**가 원인이었다.
+
+| 측 | 설정 | 동작 |
+|---|------|------|
+| **Netty 서버** | `ChannelFutureListener.CLOSE` | 응답 전송 후 **즉시 TCP 연결 종료** |
+| **JMeter** | `use_keepalive=true` (기본값) | 같은 TCP 연결을 **재사용**하려고 시도 |
+
+```
+JMeter 요청1 → [TCP 연결] → Netty 응답1 → Netty: 연결 닫기(FIN)
+JMeter 요청2 → [같은 연결 재사용 시도] → 이미 닫힌 연결 → SocketException
+JMeter 요청3 → [새 TCP 연결] → Netty 응답3 → Netty: 연결 닫기(FIN)
+JMeter 요청4 → [같은 연결 재사용 시도] → SocketException
+...
+```
+
+이것이 정확히 200 → 실패 → 200 → 실패 패턴이 반복된 이유다.
+
+### HTTP Keep-Alive란
+
+- **Keep-Alive OFF**: 매 요청마다 TCP 3-way handshake(SYN→SYN-ACK→ACK) 후 연결, 응답 후 즉시 종료
+- **Keep-Alive ON**: 하나의 TCP 연결에서 여러 요청/응답을 처리 — 연결 생성/종료 비용 절감
+
+### 긴급 조치 (JMeter 측)
+
+JMeter `.jmx` 파일에서 `use_keepalive`를 `false`로 변경하여, JMeter도 매 요청마다 새 연결을 사용하도록 맞춤.
+
+```xml
+<!-- Before -->
+<boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+
+<!-- After -->
+<boolProp name="HTTPSampler.use_keepalive">false</boolProp>
+```
+
+이 조치로 SocketException은 해소되지만, **매 요청마다 TCP 연결을 새로 맺는 오버헤드**가 남아있다.
+
+### 근본 해결 (Phase 3 개선 1 — 미적용)
+
+서버 측에서 HTTP Keep-Alive를 지원하도록 `HttpRoutingHandler.sendJson()`을 수정해야 한다.
+
+```java
+// 현재 (매번 닫기)
+ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+
+// 개선안 (클라이언트가 keep-alive 요청 시 연결 유지)
+boolean keepAlive = HttpUtil.isKeepAlive(request);
+if (keepAlive) {
+    response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+    ctx.writeAndFlush(response);
+} else {
+    ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+}
+```
+
+- **예상 효과**: TPS 2~5배 향상 (TCP 핸드셰이크 제거)
+- **구현 시 주의**: idle timeout 설정 필요 (연결이 무한히 열려있지 않도록)
+- **상태**: Phase 3 개선 목록에 등록됨, Phase 1 완료 후 진행 예정
+
+### 판단 근거
+- 이 병목은 todo-20260505의 "예상 병목 지점 (REST) #1"에 이미 예측되어 있었으며, S1 테스트에서 **첫 번째로 확인된 실제 병목**이다
+- 긴급 조치(JMeter Keep-Alive OFF)로 테스트 진행을 우선하고, 서버 개선은 Phase 3에서 Before/After 비교를 위해 분리
+
+### 관련 파일
+- `cartracking/netty/rest/route/HttpRoutingHandler.java:125-127` — `ChannelFutureListener.CLOSE`
+- `D:/apache-jmeter-5.6.3/result_cartracking/cartracking_test.jmx` — `use_keepalive` 설정
