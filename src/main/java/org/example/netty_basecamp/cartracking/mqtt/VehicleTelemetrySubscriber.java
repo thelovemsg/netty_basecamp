@@ -7,6 +7,8 @@ import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.example.netty_basecamp.cartracking.netty.perf.PipelineMetrics;
+import org.example.netty_basecamp.cartracking.netty.perf.PipelineTrace;
 import org.example.netty_basecamp.cartracking.tracking.domain.LocationSnapshot;
 import org.example.netty_basecamp.cartracking.tracking.domain.vo.Location;
 import org.example.netty_basecamp.cartracking.vehicle.application.TripApplicationService;
@@ -39,9 +41,11 @@ public class VehicleTelemetrySubscriber {
                 .topicFilter("vehicle/+/telemetry")
                 .qos(MqttQos.AT_LEAST_ONCE)
                 .callback(publish -> {
+                    PipelineTrace trace = PipelineMetrics.startMqtt();
                     try {
                         byte[] payload = publish.getPayloadAsBytes();
                         TelemetryPayload telemetry = objectMapper.readValue(payload, TelemetryPayload.class);
+                        trace.mark("DESERIALIZE");
 
                         Location location = Location.of(telemetry.latitude(), telemetry.longitude());
                         LocationSnapshot snapshot = tripApplicationService.recordSnapshot(telemetry.vehicleId(), location);
@@ -49,10 +53,13 @@ public class VehicleTelemetrySubscriber {
                             tripApplicationService.startTrip(telemetry.vehicleId(), location);
                             log.info("Journey 자동 생성 [vehicleId={}]", telemetry.vehicleId());
                         }
+                        trace.mark("DOMAIN");
 
-                        // WebSocket 연결된 브라우저 전체에 telemetry 전송
                         String json = objectMapper.writeValueAsString(telemetry);
+                        trace.mark("SERIALIZE");
+
                         websocketClients.writeAndFlush(new TextWebSocketFrame(json));
+                        trace.end("BROADCAST");
 
                         log.info("Telemetry 수신 [vehicleId={}] [lat={}, lng={}]",
                                 telemetry.vehicleId(), telemetry.latitude(), telemetry.longitude());

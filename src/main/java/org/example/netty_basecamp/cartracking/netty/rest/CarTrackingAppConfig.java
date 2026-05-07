@@ -32,10 +32,7 @@ public class CarTrackingAppConfig {
 
     public record BootstrapResult(RouteRegistry routeRegistry, ChannelGroup websocketClients) {}
 
-    private static final String[] PLATES = {
-            "서울11가1001", "서울22나2002", "경기33다3003", "인천44라4004", "부산55마5005",
-            "대전66바6006", "광주77사7007", "울산88아8008", "세종99자9009", "제주10차1010"
-    };
+    private static final int SEED_VEHICLE_COUNT = 1000;
     private static final VehicleTypeEnum[] TYPES = VehicleTypeEnum.values();
 
     public static BootstrapResult init() {
@@ -84,15 +81,14 @@ public class CarTrackingAppConfig {
     /**
      * 차량 텔레메트리 데이터 구독자를 초기화하는 메서드
      * MQTT 브로커로부터 차량 데이터를 수신하여 트립 서비스로 전달하는 역할
-     *
-     * @param tripService 수신한 텔레메트리 데이터를 처리할 트립 애플리케이션 서비스
      */
     private static void seedVehicles(VehicleRepository repository) {
         SeoulRouteGenerator routeGen = new SeoulRouteGenerator();
         long now = System.currentTimeMillis();
-        for (int i = 0; i < PLATES.length; i++) {
+        for (int i = 1; i <= SEED_VEHICLE_COUNT; i++) {
+            String plateNumber = String.format("TEST-%04d", i);
             VehicleCreate create = VehicleCreate.builder()
-                    .plateNumber(PLATES[i])
+                    .plateNumber(plateNumber)
                     .type(TYPES[i % TYPES.length])
                     .homeLocation(routeGen.randomLocation())
                     .build();

@@ -14,8 +14,10 @@ public class SimulatorController {
     }
 
     public Object start(RequestContext ctx) {
-        simulatorBootstrap.start();
-        return Map.of("message", "시뮬레이터가 시작되었습니다.");
+        String countParam = ctx.queryParam("count");
+        int vehicleCount = countParam != null ? Integer.parseInt(countParam) : 0;
+        simulatorBootstrap.start(vehicleCount);
+        return Map.of("message", "시뮬레이터가 시작되었습니다.", "vehicleCount", vehicleCount > 0 ? vehicleCount : "all");
     }
 
     public Object stop(RequestContext ctx) {

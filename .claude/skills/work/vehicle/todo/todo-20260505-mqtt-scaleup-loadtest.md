@@ -48,18 +48,117 @@
 
 ### 부하 테스트 전 체크리스트
 
-- [ ] 서버 정상 동작 확인: `curl http://localhost:8081/api/cartracking/vehicles`
+- [ ] 서버 정상 동작 확인: `curl http://localhost:8081/api/cartracking/vehicles` (1000대 응답 확인)
 - [ ] HiveMQ CE 정상 동작 확인: `docker ps`
 - [ ] VisualVM에서 서버 JVM 연결 확인
 - [ ] JMeter에서 간단한 1회 요청 성공 확인
+- [ ] 시뮬레이터 count 파라미터 동작 확인: `curl -X POST 'http://localhost:8081/api/cartracking/simulator/start?count=10'`
 
 ---
 
-## Phase 1: REST API 부하 테스트
+## Phase 1: 차량 수 스케일업 통합 부하 테스트 (핵심)
+
+### 목표
+차량 수(= MQTT 메시지 빈도)를 10 → 100 → 500 → 1000대로 늘리면서,
+**시뮬레이터가 GPS를 쏘는 중에** REST 조회 + WebSocket broadcast가 동시에 동작하는
+실제 운영 시나리오의 병목을 찾는다.
+
+### 코드 변경 사항 (ADR-V025, ADR-V027)
+- 서버 시작 시 차량 1000대 자동 seed 등록 (`SEED_VEHICLE_COUNT = 1000`, 번호판 `TEST-0001` ~ `TEST-1000`)
+- `POST /api/cartracking/simulator/start?count=N` — 시뮬레이터가 앞에서 N대만 시뮬레이션
 
 ### 테스트 시나리오
 
-JMeter로 Netty REST 엔드포인트에 동시 요청을 쏜다.
+시뮬레이터가 N대 차량의 GPS를 5초마다 MQTT로 전송하는 중에,
+JMeter로 REST 조회 부하 + WebSocket 수신 측정을 **동시에** 수행한다.
+
+#### 단계별 실행
+
+| 단계 | 차량 수 | MQTT msg/s | JMeter REST | JMeter WS | 뭘 보는가 |
+|------|--------|-----------|-------------|-----------|----------|
+| S1 | 10대 | 2/s | 10 threads, GET /vehicles, Loop 100 | 5 WS 연결 | baseline: 모든 지표 정상인가? |
+| S2 | 50대 | 10/s | 30 threads, GET /vehicles, Loop 50 | 10 WS 연결 | 50대로 늘려도 괜찮은가? |
+| S3 | 100대 | 20/s | 50 threads, GET /vehicles, Loop 50 | 20 WS 연결 | broadcast 지연이 시작되는가? |
+| S4 | 500대 | 100/s | 50 threads, GET /vehicles, Loop 30 | 50 WS 연결 | 어디서 병목이 터지나? |
+| S5 | 1000대 | 200/s | 50 threads, GET /vehicles, Loop 20 | 100 WS 연결 | 극한: 서버가 버티는가? |
+
+> **핵심 변수는 차량 수(= 메시지 빈도)**이다.
+> REST 동시 사용자 수는 고정 또는 소폭 증가만 시킨다.
+
+#### 각 단계 실행 절차
+
+```
+1. 서버 시작 (1000대 seed 자동 등록)
+
+2. 시뮬레이터 시작 (N대)
+   curl -X POST 'http://localhost:8081/api/cartracking/simulator/start?count=10'
+
+3. 30초 대기 (시뮬레이터가 GPS를 쏘기 시작하고 안정화)
+
+4. JMeter 실행 (시뮬레이터가 돌아가는 중에)
+   - REST Thread Group: GET /api/cartracking/vehicles
+   - WebSocket Thread Group: ws://localhost:8081/ws/vehicles 연결 + 수신 대기
+   jmeter -n -t scaleup-loadtest.jmx -l loadtest-results/S1.jtl -e -o loadtest-results/S1/
+
+5. JMeter 종료 후 결과 기록
+   - REST: Avg, p99, TPS, Error%
+   - WebSocket: 수신 메시지 수, 수신 지연(payload timestamp vs 수신 시각)
+   - VisualVM: 힙 사용량, GC 횟수, 스레드 수
+
+6. 시뮬레이터 중지
+   curl -X POST http://localhost:8081/api/cartracking/simulator/stop
+
+7. 서버 재시작 (InMemory 초기화) → 다음 단계로
+   - S1 → S2: count=10 → count=50
+```
+
+#### JMeter Test Plan 구성
+
+```
+Test Plan: "차량 스케일업 통합 부하 테스트"
+├── HTTP Request Defaults          ← localhost, 8081, http
+├── HTTP Header Manager            ← Content-Type: application/json
+│
+├── [Thread Group] REST-GET-vehicles       ← 시뮬레이터 도는 중에 REST 부하
+│   ├── Number of Threads: 10~50 (단계별 조절)
+│   ├── Ramp-Up Period: 5
+│   ├── Loop Count: 100~20 (단계별 조절)
+│   └── HTTP Request: GET /api/cartracking/vehicles
+│
+├── [Thread Group] WS-broadcast-수신       ← 시뮬레이터 도는 중에 WebSocket 수신 측정
+│   ├── Number of Threads: 5~100 (단계별 조절)
+│   ├── WebSocket Open: ws://localhost:8081/ws/vehicles
+│   ├── WebSocket Read (Duration: 60초간 수신)
+│   └── WebSocket Close
+│
+├── [Listener] Summary Report
+├── [Listener] Response Times Over Time
+└── [Listener] Transactions Per Second
+```
+
+#### 결과 기록 템플릿
+
+```
+| 단계 | 차량 수 | REST Avg | REST p99 | REST TPS | REST Error% | WS 수신 지연 | WS 유실률 | 힙 사용 | GC 횟수 |
+|------|--------|---------|---------|---------|------------|------------|---------|--------|--------|
+| S1   | 10     |         |         |         |            |            |         |        |        |
+| S2   | 50     |         |         |         |            |            |         |        |        |
+| S3   | 100    |         |         |         |            |            |         |        |        |
+| S4   | 500    |         |         |         |            |            |         |        |        |
+| S5   | 1000   |         |         |         |            |            |         |        |        |
+```
+
+---
+
+## Phase 1-A: REST 순수 부하 테스트 (보조)
+
+### 목표
+시뮬레이터 없이 REST 엔드포인트만의 순수 처리 성능을 측정한다.
+Phase 1 결과와 비교하면 "MQTT broadcast가 REST 성능에 얼마나 영향을 주는가"를 알 수 있다.
+
+### 테스트 시나리오
+
+JMeter로 Netty REST 엔드포인트에 동시 요청을 쏜다. (시뮬레이터 OFF 상태)
 
 #### JMeter Test Plan 구성
 
@@ -77,12 +176,108 @@ Test Plan
 
 #### JMeter HTTP Request 설정
 
+공통 설정 (HTTP Request Defaults에 등록하면 편리):
 ```
 Server Name: localhost
 Port: 8081
 Protocol: http
-Path: /api/cartracking/vehicles
+Content-Type: application/json (Header Manager에 추가)
+```
+
+##### Request 1: GET /api/cartracking/vehicles (전체 차량 조회)
+```
 Method: GET
+Path: /api/cartracking/vehicles
+Body: 없음
+예상 응답: 200 OK, JSON 배열
+```
+
+##### Request 2: GET /api/cartracking/vehicles/${vehicleId} (단일 차량 조회)
+```
+Method: GET
+Path: /api/cartracking/vehicles/${vehicleId}
+Body: 없음
+예상 응답: 200 OK, JSON 객체 (id, plateNumber, type, status, location)
+설정: User Defined Variables에 vehicleId=1 또는 CSV Data Set으로 ID 목록 주입
+```
+
+##### Request 3: POST /api/cartracking/vehicles (차량 등록)
+```
+Method: POST
+Path: /api/cartracking/vehicles
+Body (raw JSON):
+{
+  "plateNumber": "TEST${__threadNum}${__counter(,)}",
+  "type": "SEDAN",
+  "homeLat": 37.4979,
+  "homeLng": 127.0276
+}
+예상 응답: 200 OK, 생성된 차량 JSON (id, plateNumber, type, status, location)
+참고: plateNumber 중복 방지를 위해 JMeter 함수로 고유값 생성
+      type 유효값: SEDAN, SUV, VAN
+      homeLat: -90 ~ 90 / homeLng: -180 ~ 180
+```
+
+##### Request 4: GET /api/cartracking/vehicles/${vehicleId}/journeys (여정 조회)
+```
+Method: GET
+Path: /api/cartracking/vehicles/${vehicleId}/journeys
+Body: 없음
+예상 응답: 200 OK, Journey JSON 배열 (id, origin, destination, status, startedAt, arrivedAt)
+설정: 시뮬레이터로 여정 데이터를 미리 생성해둔 후 테스트
+```
+
+##### Request 5: GET /api/cartracking/journeys/${journeyId}/route (여정 경로/GPS 스냅샷)
+```
+Method: GET
+Path: /api/cartracking/journeys/${journeyId}/route
+Body: 없음
+예상 응답: 200 OK, LocationSnapshot JSON 배열 (id, journeyId, location, capturedAt)
+설정: 시뮬레이터 실행 후 생성된 journeyId 사용
+```
+
+#### Listener 설정
+
+##### 1. Summary Report (필수 — 핵심 지표 한눈에)
+```
+추가 위치: Test Plan 또는 Thread Group 하위
+설정:
+  - "Save Table Data" 체크 → CSV로 결과 내보내기
+확인 항목: Average, p90, p99, Min, Max, Error%, Throughput(TPS)
+```
+
+##### 2. Response Times Over Time (플러그인 필요)
+```
+추가 위치: Thread Group 하위
+설정:
+  - Granularity: 1000ms (1초 단위 집계)
+  - 그래프에서 시간 흐름에 따른 응답시간 변화 확인
+확인 항목: 부하 증가 시 응답시간이 선형으로 느는지, 급격히 치솟는 지점(변곡점)이 어디인지
+```
+
+##### 3. Transactions Per Second (플러그인 필요)
+```
+추가 위치: Thread Group 하위
+설정:
+  - Granularity: 1000ms
+확인 항목: TPS가 Thread 수에 비례해 오르는지, 포화(saturation) 지점이 어디인지
+```
+
+##### 4. View Results Tree (디버깅 전용)
+```
+추가 위치: Thread Group 하위
+설정:
+  - 부하 테스트 시 반드시 비활성화 (메모리 폭증 위험)
+  - 시나리오 검증용으로만 사용 (1~2회 수동 실행 시)
+확인 항목: 요청/응답 원문, HTTP 상태코드, JSON 파싱 에러 여부
+```
+
+##### 5. Assertion (선택 — 정확성 검증)
+```
+추가 위치: 각 HTTP Request 하위
+- Response Assertion: Status Code = 200
+- JSON Assertion: $.length() > 0 (GET 목록) 또는 $.id exists (GET 단건)
+주의: 부하 테스트 시 Assertion 실패가 Error%에 포함됨
 ```
 
 #### 단계별 실행
@@ -95,6 +290,176 @@ Method: GET
 | R4 | 1000 threads, Ramp-up 30초, Loop 30 | GET /vehicles | "한계점: connection refused? timeout?" |
 | R5 | 100 threads, Ramp-up 10초, Loop 100 | POST /vehicles | "쓰기 요청도 같은 성능이야?" |
 | R6 | 500 threads (GET 70% + POST 30%) | 혼합 | "읽기/쓰기 섞이면?" |
+| R7 | 100 threads, Ramp-up 10초, Loop 50 | GET /vehicles/{id} | "단건 조회 vs 목록 조회 성능 차이?" |
+| R8 | 100 threads, Ramp-up 10초, Loop 50 | GET /journeys/{id}/route | "GPS 스냅샷 대량 응답 시 직렬화 병목?" |
+
+#### 단계별 실행 방법
+
+##### JMeter GUI에서 공통 설정 추가하는 법
+
+```
+1. HTTP Request Defaults (모든 HTTP Request에 공통 적용)
+   위치: Test Plan 우클릭 → Add → Config Element → HTTP Request Defaults
+   설정:
+     - Server Name or IP: localhost
+     - Port Number: 8081
+     - Protocol: http
+   효과: 하위 Thread Group의 HTTP Request에서 이 값들을 비워두면 자동으로 이 값이 적용됨
+
+2. HTTP Header Manager (공통 헤더)
+   위치: Test Plan 우클릭 → Add → Config Element → HTTP Header Manager
+   설정:
+     - Name: Content-Type / Value: application/json
+   효과: 모든 요청에 이 헤더가 자동 추가됨
+
+3. Listener 추가
+   위치: Test Plan 우클릭 → Add → Listener → Summary Report (또는 다른 Listener)
+   - Test Plan 바로 아래에 두면 모든 Thread Group의 결과를 합산
+   - 특정 Thread Group 아래에 두면 해당 그룹 결과만 수집
+
+4. Thread Group 추가
+   위치: Test Plan 우클릭 → Add → Threads (Users) → Thread Group
+   설정:
+     - Name: "R1-baseline-10threads" (알아보기 쉬운 이름)
+     - Number of Threads: 10
+     - Ramp-Up Period: 5
+     - Loop Count: 100
+
+5. Thread Group 안에 HTTP Request 추가
+   위치: Thread Group 우클릭 → Add → Sampler → HTTP Request
+   설정:
+     - Method: GET
+     - Path: /api/cartracking/vehicles
+     - (Server, Port, Protocol은 비워두면 HTTP Request Defaults에서 가져옴)
+```
+
+참고: Config Element는 **계층 구조**로 동작한다.
+- Test Plan 레벨에 두면 → 모든 Thread Group에 적용
+- Thread Group 레벨에 두면 → 해당 Thread Group에만 적용
+- 하위가 상위를 덮어씀 (override)
+
+##### 방법: 단일 .jmx 파일에 Thread Group을 단계별로 분리
+
+하나의 Test Plan 안에 R1~R8을 각각 별도 Thread Group으로 만들고,
+실행할 단계만 Enable / 나머지는 Disable 해서 한 번에 하나씩 돌린다.
+
+```
+Test Plan: "REST API 부하 테스트"
+├── HTTP Request Defaults          ← 공통 설정 (localhost, 8081, http)
+├── HTTP Header Manager            ← Content-Type: application/json
+│
+├── [Thread Group] R1-baseline-10threads        ← Enable
+│   ├── Number of Threads: 10
+│   ├── Ramp-Up Period: 5
+│   ├── Loop Count: 100
+│   └── HTTP Request: GET /api/cartracking/vehicles
+│
+├── [Thread Group] R2-100threads                ← Disable (R1 끝난 후 이걸 Enable)
+│   ├── Number of Threads: 100
+│   ├── Ramp-Up Period: 10
+│   ├── Loop Count: 100
+│   └── HTTP Request: GET /api/cartracking/vehicles
+│
+├── [Thread Group] R3-500threads                ← Disable
+│   ├── Number of Threads: 500
+│   ├── Ramp-Up Period: 20
+│   ├── Loop Count: 50
+│   └── HTTP Request: GET /api/cartracking/vehicles
+│
+├── [Thread Group] R4-1000threads               ← Disable
+│   ├── Number of Threads: 1000
+│   ├── Ramp-Up Period: 30
+│   ├── Loop Count: 30
+│   └── HTTP Request: GET /api/cartracking/vehicles
+│
+├── [Thread Group] R5-POST-100threads           ← Disable
+│   ├── Number of Threads: 100
+│   ├── Ramp-Up Period: 10
+│   ├── Loop Count: 100
+│   └── HTTP Request: POST /api/cartracking/vehicles
+│       Body: {"plateNumber":"TEST${__threadNum}-${__counter(,)}","type":"SEDAN","homeLat":37.4979,"homeLng":127.0276}
+│
+├── [Thread Group] R6-혼합-500threads           ← Disable
+│   ├── Number of Threads: 500
+│   ├── Ramp-Up Period: 20
+│   ├── Loop Count: 50
+│   ├── Throughput Controller (70%) → HTTP Request: GET /api/cartracking/vehicles
+│   └── Throughput Controller (30%) → HTTP Request: POST /api/cartracking/vehicles
+│       Body: {"plateNumber":"MIX${__threadNum}-${__counter(,)}","type":"SUV","homeLat":37.50,"homeLng":127.03}
+│
+├── [Thread Group] R7-단건조회-100threads       ← Disable
+│   ├── Number of Threads: 100
+│   ├── Ramp-Up Period: 10
+│   ├── Loop Count: 50
+│   └── HTTP Request: GET /api/cartracking/vehicles/1
+│
+├── [Thread Group] R8-GPS스냅샷-100threads      ← Disable
+│   ├── Number of Threads: 100
+│   ├── Ramp-Up Period: 10
+│   ├── Loop Count: 50
+│   └── HTTP Request: GET /api/cartracking/journeys/1/route
+│
+├── [Listener] Summary Report
+├── [Listener] Response Times Over Time
+└── [Listener] Transactions Per Second
+```
+
+##### 실행 절차 (R1 예시)
+
+```
+1. GUI에서 시나리오 검증
+   - R1 Thread Group만 Enable, 나머지 Disable
+   - View Results Tree 추가 (디버깅용)
+   - 실행 버튼 (▶) → 요청/응답 정상 확인 → View Results Tree 삭제
+
+2. CLI로 실제 부하 실행
+   jmeter -n -t rest-loadtest.jmx -l loadtest-results/R1-baseline.jtl -e -o loadtest-results/phase1-R1-baseline/
+
+3. 결과 확인
+   - loadtest-results/phase1-R1-baseline/index.html 열기
+   - Summary Report에서 Avg, p99, TPS, Error% 기록
+
+4. 서버 재시작 (InMemory 데이터 초기화)
+   - 특히 POST 테스트(R5, R6) 후에는 메모리에 데이터가 쌓이므로 필수
+
+5. 다음 단계로
+   - R1 Disable → R2 Enable → 저장 → CLI 재실행
+   - 결과 파일명/디렉토리명을 단계별로 분리
+```
+
+##### R6 혼합 시나리오: Throughput Controller 설정법
+
+```
+Thread Group (R6)
+├── Throughput Controller
+│   ├── Based on: Percent Executions
+│   ├── Throughput: 70.0
+│   └── HTTP Request: GET /api/cartracking/vehicles
+└── Throughput Controller
+    ├── Based on: Percent Executions
+    ├── Throughput: 30.0
+    └── HTTP Request: POST /api/cartracking/vehicles
+```
+- Throughput Controller는 "이 하위 요소를 전체 반복 중 몇 %만 실행할 것인가"를 제어
+- 70/30으로 설정하면 대략 GET 70%, POST 30% 비율로 섞임
+
+##### R7, R8 사전 준비
+
+```
+R7 (단건 조회): 테스트 전에 차량이 최소 1대 이상 등록되어 있어야 함
+  → 서버 시작 후 curl로 미리 등록:
+  curl -X POST http://localhost:8081/api/cartracking/vehicles \
+    -H 'Content-Type: application/json' \
+    -d '{"plateNumber":"SEED01","type":"SEDAN","homeLat":37.4979,"homeLng":127.0276}'
+
+R8 (GPS 스냅샷): Journey + LocationSnapshot 데이터가 필요
+  → 시뮬레이터를 30초~1분 돌려서 데이터 생성:
+  curl -X POST http://localhost:8081/api/cartracking/simulator/start
+  (30초 대기)
+  curl -X POST http://localhost:8081/api/cartracking/simulator/stop
+  → 생성된 journeyId 확인:
+  curl http://localhost:8081/api/cartracking/vehicles/1/journeys
+```
 
 #### 결과 해석 기준
 
@@ -133,11 +498,16 @@ jmeter -n -t rest-loadtest.jmx -l result.jtl -e -o report/
 
 ---
 
-## Phase 2: WebSocket broadcast 부하 테스트
+## Phase 2: WebSocket broadcast 집중 테스트 (보조)
+
+### 목표
+REST 부하 없이 **WebSocket 연결 수 × 차량 수** 조합만으로 broadcast 성능을 집중 측정한다.
+Phase 1 통합 시나리오에서 "WS가 병목인 것 같다"고 판단되면 여기서 상세 분석한다.
 
 ### 테스트 시나리오
 
 N개 WebSocket 클라이언트를 연결한 상태에서 시뮬레이터를 돌려 broadcast 성능을 측정한다.
+REST 부하는 주지 않는다 (순수 broadcast 성능).
 
 #### JMeter WebSocket Test Plan 구성
 
@@ -146,27 +516,47 @@ Test Plan
 ├── Thread Group (WebSocket 연결 수)
 │   ├── WebSocket Open Connection
 │   │     URL: ws://localhost:8081/ws/vehicles
-│   ├── WebSocket Read (서버에서 오는 메시지 수신 대기)
+│   ├── WebSocket Read (서버에서 오는 메시지 수신 대기, Duration: 60초)
 │   └── WebSocket Close
 ├── Listener: Summary Report
 └── Listener: Response Times Over Time
 ```
 
-#### 동시에 다른 터미널에서 시뮬레이터 시작
+#### 시뮬레이터 시작 (별도 터미널)
 
 ```bash
-curl -X POST http://localhost:8081/api/cartracking/simulator/start
+# W1~W2: 10대
+curl -X POST 'http://localhost:8081/api/cartracking/simulator/start?count=10'
+
+# W3~W4: 100대
+curl -X POST 'http://localhost:8081/api/cartracking/simulator/start?count=100'
+
+# W5: 1000대
+curl -X POST 'http://localhost:8081/api/cartracking/simulator/start?count=1000'
 ```
 
 #### 단계별 실행
 
-| 단계 | WS 연결 수 | 차량 수 (msg/s) | 뭘 보는가 |
-|------|-----------|----------------|----------|
-| W1 | 10 | 10대 (2 msg/s) | baseline: "broadcast 잘 되나?" |
-| W2 | 100 | 10대 (2 msg/s) | "연결만 많아도 느려지나?" |
-| W3 | 100 | 100대 (20 msg/s) | "메시지 빈도 올리면?" |
-| W4 | 500 | 100대 (20 msg/s) | "500명에게 20msg/s broadcast 가능?" |
-| W5 | 1000 | 1000대 (200 msg/s) | 극한: 초당 20만 frame write |
+| 단계 | WS 연결 수 | 차량 수 | msg/s | 초당 총 frame write | 뭘 보는가 |
+|------|-----------|--------|-------|-------------------|----------|
+| W1 | 10 | 10대 | 2/s | 20 | baseline: broadcast 잘 되나? |
+| W2 | 100 | 10대 | 2/s | 200 | 연결만 많아도 느려지나? |
+| W3 | 100 | 100대 | 20/s | 2,000 | 메시지 빈도 올리면? |
+| W4 | 500 | 100대 | 20/s | 10,000 | 500명에게 20msg/s broadcast 가능? |
+| W5 | 1000 | 1000대 | 200/s | 200,000 | 극한: 초당 20만 frame write |
+
+> 초당 총 frame write = WS 연결 수 × msg/s
+> W5는 EventLoop가 초당 20만 건의 writeAndFlush를 처리해야 한다.
+
+#### 실행 절차
+
+```
+1. 서버 시작
+2. curl로 시뮬레이터 시작 (차량 수 지정)
+3. 30초 대기 (안정화)
+4. JMeter WebSocket Test Plan 실행 (60초간 수신)
+5. 결과 기록 → 시뮬레이터 중지 → 서버 재시작 → 다음 단계
+```
 
 #### 결과 해석 기준
 
@@ -262,28 +652,31 @@ broadcast 지연 = JMeter 수신 시각 - payload.timestamp
 
 ### 산출물
 
-1. **결과 표**: 각 시나리오 × 각 개선의 Before/After
+1. **결과 표**: 차량 스케일업 × 각 개선의 Before/After
 
 ```
 예시:
-| 시나리오 | 개선 전 TPS | 개선 후 TPS | 개선 전 p99 | 개선 후 p99 | 원인 |
-|---------|------------|------------|------------|------------|------|
-| R3 (500동시) | 1,200 | 5,800 | 450ms | 35ms | Keep-Alive 적용 |
-| W4 (500연결) | 수신지연 800ms | 50ms | - | - | broadcast retain 최적화 |
+| 시나리오 | 차량 수 | 개선 전 REST TPS | 개선 후 | 개선 전 WS 지연 | 개선 후 | 원인 |
+|---------|--------|----------------|--------|---------------|--------|------|
+| S3      | 100대   | 1,200          | 5,800  | 150ms         | 30ms   | Keep-Alive 적용 |
+| S4      | 500대   | 500            | 2,000  | 800ms         | 50ms   | broadcast retain 최적화 |
 ```
 
-2. **ADR-V027**: "Netty 부하 테스트 결과 및 최적화 결정" 작성
-3. **최종 아키텍처 한계**: "현재 단일 서버에서 최대 X 동시연결, Y TPS 처리 가능"
+2. **ADR-V028**: "Netty 부하 테스트 결과 및 최적화 결정" 작성 (V027은 count 파라미터 추가에 사용됨)
+3. **최종 아키텍처 한계**: "현재 단일 서버에서 최대 X대 차량, Y TPS, Z WS 동시연결 처리 가능"
 
 ### JMeter HTML 리포트
 
 각 단계 실행 후 자동 생성되는 리포트를 `loadtest-results/` 디렉토리에 보관:
 ```
 loadtest-results/
-├── phase1-R1-baseline/
-├── phase1-R2-100threads/
-├── phase1-R3-500threads/
-├── phase2-W1-baseline/
+├── phase1-S1-10vehicles/
+├── phase1-S2-50vehicles/
+├── phase1-S3-100vehicles/
+├── phase1-S4-500vehicles/
+├── phase1-S5-1000vehicles/
+├── phase1a-REST-pure/
+├── phase2-W1-ws-baseline/
 ├── phase3-after-keepalive/
 ├── phase3-after-backlog/
 └── ...
@@ -293,16 +686,19 @@ loadtest-results/
 
 ## 실행 순서 요약
 
-1. JMeter 설치 + 플러그인 세팅
+1. JMeter 설치 + 플러그인 세팅 (WebSocket Sampler 필수)
 2. 서버 + HiveMQ CE 기동, VisualVM 연결
-3. **Phase 1** 실행 → REST 병목 발견 → 기록
-4. **Phase 2** 실행 → WebSocket 병목 발견 → 기록
-5. **Phase 3** 개선 1~8을 순서대로:
+3. **Phase 1 (핵심)** 차량 스케일업 통합 테스트: S1(10대) → S2(50대) → S3(100대) → S4(500대) → S5(1000대)
+   - 각 단계: 시뮬레이터 start?count=N → JMeter(REST+WS) → 결과 기록 → stop → 재시작
+4. **Phase 1-A (보조)** 시뮬레이터 OFF 상태에서 REST 순수 성능 측정
+   - Phase 1 결과와 비교 → "MQTT broadcast가 REST에 미치는 영향" 파악
+5. **Phase 2 (보조)** Phase 1에서 WS 병목이 의심되면, WS 연결 수만 집중 스케일업
+6. **Phase 3** 병목 개선 1~8을 순서대로:
    - 1개 고친다
-   - 같은 시나리오 재측정
+   - Phase 1의 S3 또는 S4 시나리오로 재측정 (동일 조건)
    - Before/After 기록
    - 다음 개선으로
-6. **Phase 4** 결과 정리 + ADR 작성
+7. **Phase 4** 결과 정리 + ADR-V028 작성
 
 ---
 
@@ -310,6 +706,8 @@ loadtest-results/
 
 - Publisher/Subscriber 모두 **단일 MQTT 커넥션** 사용 (MqttClientFactory)
 - Subscriber callback은 HiveMQ Client 내부 스레드에서 실행 (별도 오프로드 없음)
-- InMemory 저장소 — GC pressure가 병목이 될 수 있음
+- InMemory 저장소 — GC pressure가 병목이 될 수 있음 (1000대 차량 seed data + GPS 스냅샷 누적)
 - WebSocket broadcast는 Netty ChannelGroup — EventLoop 스레드에서 실행
 - HTTP Keep-Alive 미지원 — 매 요청마다 TCP 연결 생성/종료
+- 서버 시작 시 차량 1000대 자동 seed 등록 (ADR-V025)
+- 시뮬레이터 `?count=N` 파라미터로 차량 수 제어 가능 (ADR-V027)

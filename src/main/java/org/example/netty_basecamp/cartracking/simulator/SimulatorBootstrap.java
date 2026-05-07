@@ -31,12 +31,20 @@ public class SimulatorBootstrap {
     }
 
     public void start() {
+        start(0);
+    }
+
+    public void start(int vehicleCount) {
         if (started) {
             throw new IllegalStateException("시뮬레이터가 이미 실행 중입니다.");
         }
         List<Vehicle> vehicles = vehicleRepository.findAll();
         if (vehicles.isEmpty()) {
             throw new IllegalStateException("등록된 차량이 없습니다. 차량을 먼저 등록해주세요.");
+        }
+
+        if (vehicleCount > 0) {
+            vehicles = vehicles.subList(0, Math.min(vehicleCount, vehicles.size()));
         }
 
         virtualExecutor = Executors.newVirtualThreadPerTaskExecutor();

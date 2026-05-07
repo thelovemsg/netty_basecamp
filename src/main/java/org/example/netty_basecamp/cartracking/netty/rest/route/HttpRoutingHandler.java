@@ -9,6 +9,8 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.*;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.example.netty_basecamp.cartracking.netty.perf.PipelineMetrics;
+import org.example.netty_basecamp.cartracking.netty.perf.PipelineTrace;
 import io.netty.util.CharsetUtil;
 
 import java.util.HashMap;
@@ -51,7 +53,7 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
 
         RouteMatch match = registry.find(method, path);
         if (match == null) {
-            sendJson(ctx, NOT_FOUND, Map.of("error", "Not Found"), method, path);
+            sendJson(ctx, NOT_FOUND, Map.of("error", "Not Found"), method, path, null);
             return;
         }
 
@@ -64,16 +66,23 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
                 .body(body)
                 .build();
 
+        PipelineTrace trace = PipelineMetrics.startRest();
+
         virtualExecutor.submit(() -> {
+            trace.mark("VT_WAIT");
             try {
                 Object result = match.getEntry().handle(requestContext);
-                sendJson(ctx, OK, result, method, path);
+                trace.mark("HANDLER");
+                sendJson(ctx, OK, result, method, path, trace);
             } catch (IllegalArgumentException e) {
-                sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()), method, path);
+                trace.end("ERROR");
+                sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()), method, path, null);
             } catch (IllegalStateException e) {
-                sendJson(ctx, CONFLICT, Map.of("error", e.getMessage()), method, path);
+                trace.end("ERROR");
+                sendJson(ctx, CONFLICT, Map.of("error", e.getMessage()), method, path, null);
             } catch (Exception e) {
-                sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", e.getMessage()), method, path);
+                trace.end("ERROR");
+                sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", e.getMessage()), method, path, null);
             }
         });
     }
@@ -99,13 +108,14 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         logger.error("Unhandled exception in pipeline", cause);
-        sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", "Internal Server Error"), "?", "?");
+        sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", "Internal Server Error"), "?", "?", null);
     }
 
     private void sendJson(ChannelHandlerContext ctx, HttpResponseStatus status, Object body,
-                          String method, String path) {
+                          String method, String path, PipelineTrace trace) {
         try {
             String json = objectMapper.writeValueAsString(body);
+            if (trace != null) trace.end("SERIALIZE");
             logger.info("← {} {} {} {}", method, path, status.code(), json);
             ByteBuf content = Unpooled.copiedBuffer(json, CharsetUtil.UTF_8);
             FullHttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status, content);

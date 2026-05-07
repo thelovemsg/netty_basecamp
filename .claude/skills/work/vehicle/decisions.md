@@ -8,6 +8,7 @@
 - 2026-04-21 ADR-V017 ~ V019 추가
 - 2026-05-01 ADR-V020 ~ V022 추가
 - 2026-05-04 ADR-V004 HiveMQ CE로 정정, ADR-V023 ~ V026 추가
+- 2026-05-07 ADR-V025 차량 수 10→1000대 변경, ADR-V027 시뮬레이터 count 파라미터 추가, ADR-V028 Log4j2 기반 성능 계측
 
 ---
 
@@ -36,8 +37,10 @@
 22. [ADR-V022: MQTT Subscriber가 첫 GPS 수신 시 Journey를 자동 생성](#adr-v022)
 23. [ADR-V023: 대시보드 WebSocket 실시간 추적 + 마커 애니메이션](#adr-v023)
 24. [ADR-V024: GpsInterpolator step당 최대 500m 제한](#adr-v024)
-25. [ADR-V025: 서버 시작 시 차량 10대 자동 등록(Seed Data)](#adr-v025)
+25. [ADR-V025: 서버 시작 시 차량 1000대 자동 등록(Seed Data)](#adr-v025)
 26. [ADR-V026: 시뮬레이터 종료 시 전체 차량 운행 자동 완료](#adr-v026)
+27. [ADR-V027: 시뮬레이터 start에 count 파라미터 추가 — 차량 수 스케일업 부하 테스트 지원](#adr-v027)
+28. [ADR-V028: PipelineMetrics 집계 클래스 + Log4j2 — 파이프라인 병목 구간 식별](#adr-v028)
 
 ---
 
@@ -779,24 +782,31 @@ int steps = Math.max(MIN_STEPS, (int) Math.ceil(distanceKm / MAX_STEP_KM));
 
 ---
 
-## ADR-V025: 서버 시작 시 차량 10대 자동 등록(Seed Data) {#adr-v025}
-**날짜**: 2026-05-04
+## ADR-V025: 서버 시작 시 차량 1000대 자동 등록(Seed Data) {#adr-v025}
+**날짜**: 2026-05-04 (2026-05-07 변경: 10대 → 1000대)
 
 ### 문제
 시뮬레이터 테스트를 위해 매번 REST API로 차량을 수동 등록해야 했다.
 
 ### 결정
-`CarTrackingAppConfig.init()`에서 차량 10대를 서울 영역 내 랜덤 위치에 자동 등록한다.
+`CarTrackingAppConfig.init()`에서 차량 1000대를 서울 영역 내 랜덤 위치에 자동 등록한다.
+
+### 변경 이력
+| 시점 | 차량 수 | 번호판 형식 | 이유 |
+|------|--------|-----------|------|
+| 2026-05-04 | 10대 | `서울11가1001` ~ `제주10차1010` (하드코딩 배열) | 시뮬레이터 데모용 |
+| 2026-05-07 | 1000대 | `TEST-0001` ~ `TEST-1000` (자동 생성) | 부하 테스트 스케일업 (ADR-V027) |
 
 ### 구현
-- 번호판: `서울11가1001` ~ `제주10차1010`
+- `SEED_VEHICLE_COUNT = 1000` 상수로 차량 수 제어
+- 번호판: `String.format("TEST-%04d", i)` — 1부터 순번
 - 차종: SEDAN/SUV/VAN 순환
 - 출발 위치: `SeoulRouteGenerator.randomLocation()`으로 서울 바운딩 박스 내 랜덤 배치
 
 ### 판단 근거
 - InMemory 저장소라 서버 재시작 시 데이터가 사라지므로 seed data가 필요
-- 수동 등록 반복 작업 제거로 시뮬레이터 테스트 즉시 시작 가능
-- 대시보드 진입 시 바로 차량 목록이 표시됨
+- 부하 테스트 시 차량 10 → 100 → 1000대 스케일업이 핵심 변수 — 1000대를 미리 등록해두고 시뮬레이터 `count` 파라미터로 조절
+- 하드코딩 배열 대신 자동 생성으로 변경하여 차량 수 확장이 상수 변경 한 줄로 가능
 
 ### 관련 파일
 - `cartracking/netty/rest/CarTrackingAppConfig.java`
@@ -838,3 +848,240 @@ public void stop() {
 ### 관련 파일
 - `cartracking/simulator/SimulatorBootstrap.java`
 - `cartracking/simulator/VehicleSimulator.java` — `getVehicleId()` getter 추가
+
+---
+
+## ADR-V027: 시뮬레이터 start에 count 파라미터 추가 — 차량 수 스케일업 부하 테스트 지원 {#adr-v027}
+**날짜**: 2026-05-07
+
+### 문제
+부하 테스트의 핵심 변수는 **차량 수(= MQTT 메시지 빈도)**이다. 기존 시뮬레이터는 `vehicleRepository.findAll()`로 등록된 전체 차량을 시뮬레이션했기 때문에, 10대 → 100대 → 1000대 단계별 스케일업이 불가능했다.
+
+### 결정
+`SimulatorBootstrap.start(int vehicleCount)` 오버로드를 추가하고, REST API에서 `?count=N` 쿼리 파라미터로 시뮬레이션 차량 수를 제어할 수 있게 한다.
+
+### API 변경
+```
+# 10대만 시뮬레이션
+POST /api/cartracking/simulator/start?count=10
+
+# 100대
+POST /api/cartracking/simulator/start?count=100
+
+# 전체 (count 생략 또는 0)
+POST /api/cartracking/simulator/start
+```
+
+### 응답 변경
+```json
+{"message": "시뮬레이터가 시작되었습니다.", "vehicleCount": 10}
+{"message": "시뮬레이터가 시작되었습니다.", "vehicleCount": "all"}
+```
+
+### 구현
+- `SimulatorBootstrap.start()` — 기존 동작 유지 (전체 차량)
+- `SimulatorBootstrap.start(int vehicleCount)` — `vehicleCount > 0`이면 `findAll()` 결과에서 앞에서 N대만 `subList`로 잘라서 시뮬레이션
+- `SimulatorController.start()` — `ctx.queryParam("count")`로 파라미터 읽기
+
+### 부하 테스트 시나리오와의 연관
+```
+서버 시작 → 1000대 seed 등록 (ADR-V025)
+  → start?count=10   → baseline 측정
+  → stop → start?count=100  → 스케일업 측정
+  → stop → start?count=500  → 병목점 탐색
+  → stop → start?count=1000 → 극한 테스트
+```
+
+### 판단 근거
+- 차량을 매번 등록/삭제하지 않고 시뮬레이터 파라미터만으로 스케일업 가능
+- 기존 `start()` 호출부(테스트, 대시보드)는 변경 없이 호환
+- `subList`로 앞에서 N대를 자르므로 같은 차량 세트로 반복 테스트 가능 (재현성)
+
+### 관련 파일
+- `cartracking/simulator/SimulatorBootstrap.java`
+- `cartracking/netty/rest/controller/SimulatorController.java`
+
+---
+
+## ADR-V028: PipelineMetrics 집계 클래스 + Log4j2 — 파이프라인 병목 구간 식별 {#adr-v028}
+**날짜**: 2026-05-07
+
+### 문제
+JMeter + VisualVM으로 **"느려졌다"는 사실**은 알 수 있지만, 서버 내부에서 **어느 구간이 병목인지**는 알 수 없다.
+
+예: "S4(500대)에서 REST TPS가 급락" → 원인이 직렬화인지, 도메인 로직인지, EventLoop 경합인지 구분 불가
+
+### 검토 과정 (3단계 진화)
+
+#### 1차 검토: `System.nanoTime()` + 매 요청 로그
+
+```java
+long t0 = System.nanoTime();
+// ... 역직렬화 ...
+long t1 = System.nanoTime();
+// ... 도메인 로직 ...
+long t2 = System.nanoTime();
+logger.info("[PERF] deserialize={}μs domain={}μs", (t1-t0)/1000, (t2-t1)/1000);
+```
+
+**기각 사유:**
+- 비즈니스 코드에 `t0, t1, t2, t3, t4` 변수가 흩어져서 코드 오염이 심함
+- 1000대 × 초당 200건 = **초당 200줄 로그** → 로그 I/O 자체가 병목이 됨
+- 개별 요청 시간만 찍히고 **평균/p99 같은 통계가 없음** → 결국 후처리 필요
+
+#### 2차 검토: Log4j2 타임스탬프만으로 구간 측정
+
+```
+10:00:00.000100 MQTT_RECEIVE
+10:00:00.000145 MQTT_DESERIALIZE_DONE vid=5    ← 45μs
+10:00:00.000480 MQTT_DOMAIN_DONE vid=5         ← 335μs
+```
+
+`nanoTime()` 없이 Log4j2의 마이크로초 타임스탬프 차이로 구간 소요시간을 계산하는 방식.
+
+**기각 사유:**
+- 1차와 마찬가지로 **초당 수백~수천 줄 로그가 쌓임**
+- 통계가 자동으로 나오지 않음 → **후처리 스크립트**(Python 등)로 로그 파일을 파싱해서 avg/p99를 계산해야 함
+- 부하 테스트 중 실시간으로 병목을 확인할 수 없음 (테스트 끝나고 사후 분석만 가능)
+- 차량이 많아지면 여러 차량의 로그가 뒤섞여서 파싱 로직이 복잡해짐
+
+#### 3차 결정 (채택): PipelineMetrics 집계 클래스 + Log4j2 요약 출력
+
+```
+[MQTT] 10s count=2000 | DESERIALIZE: avg=45μs p99=120μs max=250μs | DOMAIN: avg=310μs p99=800μs max=1500μs | ...
+[REST] 10s count=500  | VT_WAIT: avg=80μs p99=300μs max=800μs | HANDLER: avg=850μs p99=2500μs max=5000μs | ...
+```
+
+메모리에서 집계하고 10초마다 요약 1줄만 Log4j2로 출력.
+
+### 비교표
+
+| 기준 | 1차 (nanoTime+매건로그) | 2차 (Log4j2 타임스탬프) | 3차 (집계 클래스, 채택) |
+|------|----------------------|----------------------|---------------------|
+| 로그 양 | 초당 수백 줄 | 초당 수천 줄 | **10초에 2줄** |
+| 통계 확인 | 없음 | 후처리 스크립트 필요 | **로그에 바로 보임** |
+| 실시간 확인 | 가능 (개별 건) | 불가 (사후 분석) | **가능 (10초마다 갱신)** |
+| 코드 침습 | t0,t1,t2 변수 난무 | perf.debug() 5줄 | **trace.mark() 3~4줄** |
+| 추가 코드 | 없음 | 후처리 스크립트 | 집계 클래스 2개 |
+| 로그 I/O 영향 | 심각 | 심각 | **거의 없음** |
+| 차량 뒤섞임 | 문제 없음 (1건=1줄) | 파싱 복잡 | **문제 없음 (집계됨)** |
+
+### 이 방식이 괜찮은 이유
+
+#### 1. nanoTime 오버헤드가 무시할 수 있는 수준이다
+
+`System.nanoTime()` 호출 1회 = ~25ns (Windows 기준).
+한 MQTT 메시지당 `mark()` 3회 + `end()` 1회 = nanoTime 5회 호출 = ~125ns.
+도메인 로직이 수백 μs(= 수십만 ns)인 상황에서 125ns는 **0.05% 미만** — 측정이 측정 대상에 영향을 주지 않는다.
+
+#### 2. 메모리 사용량이 제한적이다
+
+10초간 1000대 × 2 msg/s = 2000건의 MQTT trace.
+각 trace에서 phase 5개 × Long(8바이트) = 40바이트/trace.
+총: 2000 × 40 = **80KB** — 10초마다 drain되므로 최대 80KB만 유지.
+
+#### 3. ConcurrentLinkedQueue가 lock-free이다
+
+`PipelineMetrics.record()`는 MQTT callback 스레드와 Virtual Thread에서 동시에 호출된다.
+`ConcurrentLinkedQueue.add()`는 CAS(Compare-And-Swap) 기반 lock-free 연산이므로
+EventLoop/callback 스레드를 블로킹하지 않는다.
+
+#### 4. 집계(sort + 통계)는 별도 데몬 스레드에서 수행한다
+
+`ScheduledExecutorService`의 데몬 스레드가 10초마다 `drain() → sort() → calcStats()` 수행.
+이 계산이 EventLoop이나 MQTT callback 스레드에서 일어나지 않으므로 파이프라인 성능에 영향 없음.
+
+#### 5. perf Logger가 OFF이면 집계 자체를 건너뛴다
+
+```java
+private static void report() {
+    if (!perf.isDebugEnabled()) return;  // ← OFF이면 즉시 반환
+    // drain, sort, 계산 모두 스킵
+}
+```
+
+`PipelineTrace.mark()`의 nanoTime 호출은 여전히 실행되지만 (레벨과 무관),
+이는 앞서 설명한 대로 ~25ns/회로 무시할 수 있는 수준이다.
+집계의 무거운 부분(sort, 통계 계산, 로그 출력)은 모두 건너뛴다.
+
+### 결정
+`PipelineTrace`로 구간별 소요시간을 `nanoTime()`으로 측정하고,
+`PipelineMetrics`가 메모리에서 집계하여 10초마다 avg/p99/max 요약을 Log4j2 perf logger로 출력한다.
+
+### 계측 대상 파이프라인
+
+#### MQTT 파이프라인 (VehicleTelemetrySubscriber)
+```
+start("MQTT")
+  → mark("DESERIALIZE")   역직렬화 (byte[] → TelemetryPayload)
+  → mark("DOMAIN")        도메인 로직 (recordSnapshot / startTrip)
+  → mark("SERIALIZE")     재직렬화 (TelemetryPayload → JSON String)
+  → end("BROADCAST")      WebSocket broadcast (ChannelGroup.writeAndFlush)
+  → [자동: TOTAL]         전체 소요시간
+```
+
+#### REST 파이프라인 (HttpRoutingHandler)
+```
+start("REST")
+  → mark("VT_WAIT")       EventLoop → Virtual Thread 전환 대기
+  → mark("HANDLER")       도메인 로직 (Controller → ApplicationService)
+  → end("SERIALIZE")      JSON 직렬화 (ObjectMapper.writeValueAsString)
+  → [자동: TOTAL]         전체 소요시간
+```
+
+### 구현
+
+#### PipelineTrace — 요청 1건의 구간별 소요시간 기록
+```java
+PipelineTrace trace = PipelineMetrics.start("MQTT");
+// ... 역직렬화 ...
+trace.mark("DESERIALIZE");   // 이전 mark부터 여기까지의 nanoTime 차이를 기록
+// ... 도메인 로직 ...
+trace.mark("DOMAIN");
+// ... 재직렬화 ...
+trace.mark("SERIALIZE");
+// ... broadcast ...
+trace.end("BROADCAST");      // 마지막 구간 기록 + TOTAL 계산 + PipelineMetrics에 제출
+```
+
+#### PipelineMetrics — 메모리 집계 + 주기적 요약 출력
+- `ConcurrentLinkedQueue<Long>`: lock-free로 nanoTime 차이값을 수집
+- `ScheduledExecutorService`: 데몬 스레드가 10초마다 drain → sort → avg/p99/max 계산
+- `perf` Logger: `logger.perf.level = off`이면 report() 자체를 건너뜀
+
+#### log4j2.properties — perf Logger 설정
+```properties
+# perf 전용 파일 Appender
+appender.perf.name = perfLogger
+appender.perf.fileName = ${basePath}/${projectName}_perf.log
+appender.perf.layout.pattern = %d{HH:mm:ss.SSSSSS} [%t] %msg%n
+
+# perf Logger — off by default, 부하 테스트 시 debug로 변경
+logger.perf.name = perf
+logger.perf.level = off
+logger.perf.additivity = false
+logger.perf.appenderRef.perf.ref = perfLogger
+```
+
+### 출력 예시
+```
+14:23:10.000000 [perf-reporter] [MQTT] 10s count=2000 | DESERIALIZE: avg=45μs p99=120μs max=250μs | DOMAIN: avg=310μs p99=800μs max=1500μs | SERIALIZE: avg=28μs p99=85μs max=150μs | BROADCAST: avg=65μs p99=350μs max=900μs | TOTAL: avg=448μs p99=1200μs max=2500μs
+14:23:10.000000 [perf-reporter] [REST] 10s count=500 | VT_WAIT: avg=80μs p99=300μs max=800μs | HANDLER: avg=850μs p99=2500μs max=5000μs | SERIALIZE: avg=120μs p99=400μs max=1200μs | TOTAL: avg=1050μs p99=3200μs max=6500μs
+```
+
+### 병목 판별 기준
+
+| 구간 | 정상 | 의심 | 병목 확정 |
+|------|------|------|----------|
+| DESERIALIZE | < 100μs | 100~500μs | > 500μs |
+| DOMAIN | < 500μs | 500μs~2ms | > 2ms |
+| SERIALIZE | < 100μs | 100~500μs | > 500μs |
+| BROADCAST | < 200μs | 200μs~1ms | > 1ms |
+| VT_WAIT | < 100μs | 100μs~1ms | > 1ms (VT 포화) |
+
+### 관련 파일
+- `cartracking/netty/perf/PipelineMetrics.java` — 집계 + 주기적 리포트
+- `cartracking/netty/perf/PipelineTrace.java` — 요청 1건의 구간 기록
+- `src/main/resources/log4j2.properties` — perf Appender/Logger
+- `cartracking/mqtt/VehicleTelemetrySubscriber.java` — MQTT 파이프라인 계측
+- `cartracking/netty/rest/route/HttpRoutingHandler.java` — REST 파이프라인 계측
