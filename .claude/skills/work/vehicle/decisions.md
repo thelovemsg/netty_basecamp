@@ -9,6 +9,7 @@
 - 2026-05-01 ADR-V020 ~ V022 추가
 - 2026-05-04 ADR-V004 HiveMQ CE로 정정, ADR-V023 ~ V026 추가
 - 2026-05-07 ADR-V025 차량 수 10→1000대 변경, ADR-V027 시뮬레이터 count 파라미터 추가, ADR-V028 Log4j2 기반 성능 계측, ADR-V029 HTTP Keep-Alive 병목 확인
+- 2026-05-10 ADR-V029 Keep-Alive 근본 해결 적용, ADR-V030 JMX 후행 공백 이슈, ADR-V031 부하 테스트 duration 기반 전환, ADR-V032 JMeter WebSocket 스레드 그룹 비활성화
 
 ---
 
@@ -42,6 +43,9 @@
 27. [ADR-V027: 시뮬레이터 start에 count 파라미터 추가 — 차량 수 스케일업 부하 테스트 지원](#adr-v027)
 28. [ADR-V028: PipelineMetrics 집계 클래스 + Log4j2 — 파이프라인 병목 구간 식별](#adr-v028)
 29. [ADR-V029: HTTP Keep-Alive 미지원 병목 확인 — 부하 테스트 S1에서 50% SocketException 발생](#adr-v029)
+30. [ADR-V030: JMX LoopController.loops 후행 공백 — JMeter 요청 0건 문제](#adr-v030)
+31. [ADR-V031: 부하 테스트를 loops 기반에서 duration 기반으로 전환](#adr-v031)
+32. [ADR-V032: JMeter WebSocket 스레드 그룹 비활성화 — REST + 서버 내부 계측으로 대체](#adr-v032)
 
 ---
 
@@ -1112,15 +1116,43 @@ Phase 1 부하 테스트 S1(차량 10대, REST 10 threads × 100 loops)을 JMete
 | **Netty 서버** | `ChannelFutureListener.CLOSE` | 응답 전송 후 **즉시 TCP 연결 종료** |
 | **JMeter** | `use_keepalive=true` (기본값) | 같은 TCP 연결을 **재사용**하려고 시도 |
 
+### ChannelFutureListener.CLOSE가 하는 일
+
+`writeAndFlush(response).addListener(ChannelFutureListener.CLOSE)`는 Netty에게 **"응답 전송이 완료되면 이 TCP 연결을 닫아라"**라고 지시하는 것이다.
+
+그런데 HTTP/1.1의 Keep-Alive는 **"하나의 TCP 연결에서 여러 요청/응답을 주고받자"**는 약속이다. 이 두 가지가 충돌한다.
+
 ```
-JMeter 요청1 → [TCP 연결] → Netty 응답1 → Netty: 연결 닫기(FIN)
-JMeter 요청2 → [같은 연결 재사용 시도] → 이미 닫힌 연결 → SocketException
-JMeter 요청3 → [새 TCP 연결] → Netty 응답3 → Netty: 연결 닫기(FIN)
-JMeter 요청4 → [같은 연결 재사용 시도] → SocketException
-...
+[Keep-Alive가 정상 동작하는 경우]
+TCP 연결 ──→ 요청1 → 응답1 → 요청2 → 응답2 → 요청3 → 응답3 ──→ 연결 종료
+            (하나의 연결에서 여러 요청/응답을 처리)
+
+[CLOSE를 매번 붙이면]
+TCP 연결1 ──→ 요청1 → 응답1 → 연결 종료(FIN)
+TCP 연결2 ──→ 요청2 → 응답2 → 연결 종료(FIN)
+TCP 연결3 ──→ 요청3 → 응답3 → 연결 종료(FIN)
+            (매번 새 TCP 연결을 맺어야 함)
 ```
 
-이것이 정확히 200 → 실패 → 200 → 실패 패턴이 반복된 이유다.
+### 왜 "한 번 걸러 하나씩" 에러가 났는가
+
+JMeter는 Keep-Alive를 기대하고 하나의 TCP 연결에서 다음 요청을 보내려 한다. 하지만 서버가 응답 직후 연결을 닫아버린다(FIN). 이 타이밍 차이가 교대 패턴을 만든다:
+
+```
+1. JMeter: TCP 연결 생성 → 요청1 전송
+2. Netty:  응답1 전송 → CLOSE(FIN 전송) → 연결 닫힘
+3. JMeter: 응답1 수신 (성공 ✅) → "연결 아직 살아있겠지" → 같은 연결로 요청2 전송
+4. JMeter: 요청2 전송 시도 → 이미 닫힌 소켓 → SocketException ❌
+5. JMeter: "연결이 끊겼네" → 새 TCP 연결 생성 → 요청3 전송
+6. Netty:  응답3 전송 → CLOSE(FIN 전송) → 연결 닫힘
+7. JMeter: 응답3 수신 (성공 ✅) → 같은 연결로 요청4 전송
+8. JMeter: 요청4 전송 시도 → 이미 닫힌 소켓 → SocketException ❌
+...반복
+```
+
+핵심은 **JMeter가 응답을 받은 시점에는 아직 FIN을 인식하지 못한다**는 것이다. 응답 데이터와 FIN은 거의 동시에 도착하지만, JMeter는 응답 바디를 먼저 처리하고 "연결이 살아있다"고 판단하여 다음 요청을 보낸다. 그 사이 OS가 FIN을 처리해서 소켓이 닫힌 상태가 되고, 다음 요청에서 SocketException이 터진다.
+
+그래서 **성공 → 실패 → 성공 → 실패**가 정확히 1:1로 교대하며, 에러율이 딱 50%가 된 것이다.
 
 ### HTTP Keep-Alive란
 
@@ -1141,32 +1173,188 @@ JMeter `.jmx` 파일에서 `use_keepalive`를 `false`로 변경하여, JMeter도
 
 이 조치로 SocketException은 해소되지만, **매 요청마다 TCP 연결을 새로 맺는 오버헤드**가 남아있다.
 
-### 근본 해결 (Phase 3 개선 1 — 미적용)
+### 근본 해결 (2026-05-10 적용 완료)
 
-서버 측에서 HTTP Keep-Alive를 지원하도록 `HttpRoutingHandler.sendJson()`을 수정해야 한다.
+서버 측에서 HTTP Keep-Alive를 지원하도록 `HttpRoutingHandler`를 수정했다.
+
+#### 변경 내용
+1. `channelRead0()`에서 `HttpUtil.isKeepAlive(request)`로 클라이언트의 Keep-Alive 의사를 확인
+2. `sendJson()`에 `boolean keepAlive` 파라미터 추가
+3. Keep-Alive 요청이면 `Connection: keep-alive` 헤더를 설정하고 연결을 유지, 아니면 `ChannelFutureListener.CLOSE`로 종료
 
 ```java
-// 현재 (매번 닫기)
-ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
-
-// 개선안 (클라이언트가 keep-alive 요청 시 연결 유지)
-boolean keepAlive = HttpUtil.isKeepAlive(request);
 if (keepAlive) {
     response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-    ctx.writeAndFlush(response);
-} else {
-    ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
 }
+ctx.channel().eventLoop().execute(() -> {
+    var future = ctx.writeAndFlush(response);
+    if (!keepAlive) {
+        future.addListener(ChannelFutureListener.CLOSE);
+    }
+});
 ```
 
-- **예상 효과**: TPS 2~5배 향상 (TCP 핸드셰이크 제거)
-- **구현 시 주의**: idle timeout 설정 필요 (연결이 무한히 열려있지 않도록)
-- **상태**: Phase 3 개선 목록에 등록됨, Phase 1 완료 후 진행 예정
+- **효과**: SocketException 50% 에러 완전 해소, TCP 핸드셰이크 제거로 TPS 향상
+- **TODO**: idle timeout 설정 추가 필요 (연결이 무한히 열려있지 않도록)
 
 ### 판단 근거
 - 이 병목은 todo-20260505의 "예상 병목 지점 (REST) #1"에 이미 예측되어 있었으며, S1 테스트에서 **첫 번째로 확인된 실제 병목**이다
-- 긴급 조치(JMeter Keep-Alive OFF)로 테스트 진행을 우선하고, 서버 개선은 Phase 3에서 Before/After 비교를 위해 분리
+- 긴급 조치(JMeter Keep-Alive OFF)로 테스트를 진행했으나, 매 요청마다 TCP 연결을 새로 맺는 오버헤드가 남아있어 근본 해결을 적용
 
 ### 관련 파일
-- `cartracking/netty/rest/route/HttpRoutingHandler.java:125-127` — `ChannelFutureListener.CLOSE`
-- `D:/apache-jmeter-5.6.3/result_cartracking/cartracking_test.jmx` — `use_keepalive` 설정
+- `cartracking/netty/rest/route/HttpRoutingHandler.java` — Keep-Alive 지원 구현
+- `D:/apache-jmeter-5.6.3/result_cartracking/cartracking_test.jmx` — `use_keepalive=true` (기본값 유지)
+
+---
+
+## ADR-V030: JMX LoopController.loops 후행 공백 — JMeter 요청 0건 문제 {#adr-v030}
+**날짜**: 2026-05-10
+
+### 문제
+JMeter를 CLI 모드(`-n`)로 실행했을 때 `summary = 0` — 요청이 한 건도 실행되지 않았다. 스레드는 시작되었으나 즉시 종료되는 로그가 확인됨.
+
+```
+Thread started: REST-GET-vehicles  1-1
+Thread is done: REST-GET-vehicles  1-1
+Thread finished: REST-GET-vehicles  1-1
+```
+
+### 원인
+JMeter GUI에서 JMX 파일을 저장할 때, `LoopController.loops` 값에 **후행 공백**이 삽입되었다.
+
+```xml
+<!-- REST ThreadGroup — 공백 1개 -->
+<stringProp name="LoopController.loops">${__P(restLoops,100)} </stringProp>
+
+<!-- WS ThreadGroup — 공백 2개 -->
+<stringProp name="LoopController.loops">${__P(wsLoops,5)}  </stringProp>
+```
+
+`__P` 함수가 반환한 값(`"100"`)에 공백이 붙어 `"100 "`이 되면, JMeter가 이를 정수로 파싱하지 못해 **loops=0으로 처리**한다. loops가 0이면 샘플러가 한 번도 실행되지 않는다.
+
+### 해결
+JMX 파일에서 후행 공백을 제거했다.
+
+```xml
+<!-- 수정 후 -->
+<stringProp name="LoopController.loops">${__P(restLoops,100)}</stringProp>
+<stringProp name="LoopController.loops">${__P(wsLoops,5)}</stringProp>
+```
+
+### 교훈
+- JMeter GUI에서 저장한 JMX 파일은 **텍스트 에디터로 공백/개행을 검증**해야 한다
+- CLI 모드에서 `summary = 0`이 나오면 JMX 파라미터 파싱 문제를 우선 의심할 것
+- NullPointerException(`resultData is null`)은 결과가 0건일 때 리포트 생성에서 발생하는 **부수 에러**이며, 근본 원인이 아님
+
+### 관련 파일
+- `D:/apache-jmeter-5.6.3/result_cartracking/cartracking_test.jmx`
+
+---
+
+## ADR-V031: 부하 테스트를 loops 기반에서 duration 기반으로 전환 {#adr-v031}
+**날짜**: 2026-05-10
+
+### 문제
+기존 부하 테스트가 loops 기반으로 설정되어 있었다.
+
+```
+S1: 10 threads × 100 loops = 1000건 → 약 5초 만에 종료
+```
+
+5초는 **부하 테스트가 아니라 기능 확인** 수준이다. 의미 있는 성능 데이터(평균 응답시간, TPS 추이, P99)를 얻으려면 최소 30초~1분은 지속 부하가 필요하다.
+
+### 결정
+loops 기반에서 **duration 기반(시간 제한)**으로 전환한다. 각 스테이지가 60초간 무한 반복으로 요청을 보낸다.
+
+### JMX 변경
+```xml
+<!-- Before: loops 기반 -->
+<stringProp name="LoopController.loops">${__P(restLoops,100)}</stringProp>
+
+<!-- After: duration 기반 (무한 반복 + scheduler) -->
+<stringProp name="LoopController.loops">-1</stringProp>
+<boolProp name="ThreadGroup.scheduler">true</boolProp>
+<stringProp name="ThreadGroup.duration">${__P(duration,60)}</stringProp>
+<stringProp name="ThreadGroup.delay">0</stringProp>
+```
+
+### 셸 스크립트 변경
+```bash
+# Before
+#        stage  count  restThreads  restLoops  wsThreads  wsLoops
+run_stage "S1"   10     10           100        5          5
+
+# After
+#        stage  count  restThreads  wsThreads  duration(s)
+run_stage "S1"   10     10           5          60
+```
+
+### 스테이지별 설정
+
+| Stage | 차량 수 | REST threads | WS threads | Duration |
+|-------|--------|-------------|-----------|----------|
+| S1    | 10     | 10          | 5         | 60s      |
+| S2    | 50     | 30          | 10        | 60s      |
+| S3    | 100    | 50          | 20        | 60s      |
+| S4    | 500    | 50          | 50        | 60s      |
+| S5    | 1000   | 50          | 100       | 60s      |
+
+### 판단 근거
+- **일정한 측정 시간**: 모든 스테이지가 60초로 통일되어 TPS/응답시간 비교가 공정
+- **GET /vehicles 단일 엔드포인트**: 변수를 차량 수 하나로 한정하여 스케일업 효과를 깔끔하게 비교
+- **충분한 데이터**: 60초 × 10~50 threads = 수천~수만 건의 샘플 → 통계적으로 유의미
+
+### 관련 파일
+- `D:/apache-jmeter-5.6.3/result_cartracking/cartracking_test.jmx`
+- `loadtest-run.sh`
+
+---
+
+## ADR-V032: JMeter WebSocket 스레드 그룹 비활성화 — REST + 서버 내부 계측으로 대체 {#adr-v032}
+**날짜**: 2026-05-10
+
+### 문제
+ADR-V031에서 duration 기반으로 전환한 뒤, JMeter의 `WS-broadcast-수신` 스레드 그룹이 60초 테스트 중 **hang** 상태에 빠졌다. VisualVM에서 CPU 사용량이 0으로 떨어졌고, JMeter가 종료되지 않아 `Ctrl+C`로 강제 중단해야 했다.
+
+### 원인 추정
+`OpenWebSocketSampler`(jmeter-websocket-samplers 플러그인)가 duration 모드(`loops=-1` + scheduler)와 호환되지 않는 것으로 보인다. WebSocket은 HTTP와 달리 연결을 열면 지속되는 프로토콜이라, "무한 반복으로 연결을 열고 닫기"는 의미가 없고 hang의 원인이 된다.
+
+### 결정
+JMeter의 WebSocket 스레드 그룹을 **비활성화**(enabled="false")한다. WebSocket broadcast 성능은 **서버 내부 PipelineMetrics**(ADR-V028)로 측정한다.
+
+### 왜 의미가 퇴색되지 않는가
+
+JMeter WebSocket sampler를 끄더라도, **시뮬레이터가 돌아가는 동안 서버는 WebSocket broadcast를 계속 수행**한다.
+
+```
+시뮬레이터 → MQTT publish → 서버 Subscriber 수신 → 도메인 로직 → WebSocket broadcast
+                                                                    ↑ 이 부분은 계속 동작
+JMeter → REST GET /vehicles → 서버 응답
+```
+
+즉, 측정 구조는 두 겹이다:
+
+| 측정 도구 | 측정 대상 | 측정 내용 |
+|-----------|----------|----------|
+| **JMeter (외부)** | REST API | 시뮬레이터+broadcast 부하 속에서 REST TPS/응답시간 변화 |
+| **PipelineMetrics (내부)** | MQTT + broadcast 파이프라인 | DESERIALIZE/DOMAIN/SERIALIZE/BROADCAST 구간별 소요시간 |
+
+JMeter가 WebSocket 클라이언트 역할을 못 하는 것뿐이지, **서버의 broadcast 부하 자체는 테스트에 포함**되어 있다. "차량 수 증가 → 서버 성능 변화"라는 핵심 질문에는 이 구조로 충분히 답할 수 있다.
+
+### 변경된 파일
+- `cartracking_test.jmx` — WS-broadcast-수신 ThreadGroup에 `enabled="false"` 추가
+- `loadtest-run.sh` — wsThreads 파라미터 제거
+
+### 스테이지별 설정 (최종)
+
+| Stage | 차량 수 | REST threads | Duration |
+|-------|--------|-------------|----------|
+| S1    | 10     | 10          | 60s      |
+| S2    | 50     | 30          | 60s      |
+| S3    | 100    | 50          | 60s      |
+| S4    | 500    | 50          | 60s      |
+| S5    | 1000   | 50          | 60s      |
+
+### 관련 파일
+- `D:/apache-jmeter-5.6.3/result_cartracking/cartracking_test.jmx`
+- `loadtest-run.sh`

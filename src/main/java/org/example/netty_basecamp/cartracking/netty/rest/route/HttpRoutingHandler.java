@@ -36,6 +36,7 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
+        boolean keepAlive = HttpUtil.isKeepAlive(request);
         String path = extractPath(request.uri());
         String method = request.method().name();
         String body = request.content().toString(CharsetUtil.UTF_8);
@@ -53,7 +54,7 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
 
         RouteMatch match = registry.find(method, path);
         if (match == null) {
-            sendJson(ctx, NOT_FOUND, Map.of("error", "Not Found"), method, path, null);
+            sendJson(ctx, NOT_FOUND, Map.of("error", "Not Found"), method, path, null, keepAlive);
             return;
         }
 
@@ -73,16 +74,16 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
             try {
                 Object result = match.getEntry().handle(requestContext);
                 trace.mark("HANDLER");
-                sendJson(ctx, OK, result, method, path, trace);
+                sendJson(ctx, OK, result, method, path, trace, keepAlive);
             } catch (IllegalArgumentException e) {
                 trace.end("ERROR");
-                sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()), method, path, null);
+                sendJson(ctx, BAD_REQUEST, Map.of("error", e.getMessage()), method, path, null, keepAlive);
             } catch (IllegalStateException e) {
                 trace.end("ERROR");
-                sendJson(ctx, CONFLICT, Map.of("error", e.getMessage()), method, path, null);
+                sendJson(ctx, CONFLICT, Map.of("error", e.getMessage()), method, path, null, keepAlive);
             } catch (Exception e) {
                 trace.end("ERROR");
-                sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", e.getMessage()), method, path, null);
+                sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", e.getMessage()), method, path, null, keepAlive);
             }
         });
     }
@@ -108,11 +109,11 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         logger.error("Unhandled exception in pipeline", cause);
-        sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", "Internal Server Error"), "?", "?", null);
+        sendJson(ctx, INTERNAL_SERVER_ERROR, Map.of("error", "Internal Server Error"), "?", "?", null, false);
     }
 
     private void sendJson(ChannelHandlerContext ctx, HttpResponseStatus status, Object body,
-                          String method, String path, PipelineTrace trace) {
+                          String method, String path, PipelineTrace trace, boolean keepAlive) {
         try {
             String json = objectMapper.writeValueAsString(body);
             if (trace != null) trace.end("SERIALIZE");
@@ -122,9 +123,15 @@ public class HttpRoutingHandler extends SimpleChannelInboundHandler<FullHttpRequ
             response.headers().set(CONTENT_TYPE, "application/json");
             response.headers().set(CONTENT_LENGTH, content.readableBytes());
             setCorsHeaders(response);
-            ctx.channel().eventLoop().execute(() ->
-                    ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE)
-            );
+            if (keepAlive) {
+                response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+            }
+            ctx.channel().eventLoop().execute(() -> {
+                var future = ctx.writeAndFlush(response);
+                if (!keepAlive) {
+                    future.addListener(ChannelFutureListener.CLOSE);
+                }
+            });
         } catch (Exception e) {
             logger.error("← {} {} 직렬화 실패", method, path, e);
             ctx.channel().eventLoop().execute(ctx::close);
